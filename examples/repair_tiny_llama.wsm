@@ -1,0 +1,34 @@
+// Repair a small language model without training.
+//
+// tiny_llama_defective is a Llama-style model with two MLP neurons of layer 0 amplified 10x.
+// The program compares every MLP neuron with the others in its layer, rescales the outliers
+// part by part, and verifies the result on next-token probe suites.
+
+model LM = load("fixtures/tiny_llama_defective")
+behavior count    = probes("fixtures/tiny_llama/count.json",    metric = accuracy)
+behavior opposite = probes("fixtures/tiny_llama/opposite.json", metric = accuracy)
+behavior first    = probes("fixtures/tiny_llama/first.json",    metric = accuracy)
+
+program RepairTinyLlama {
+    target LM
+
+    policy {
+        allow probe(max_forward_passes = 1000)
+        allow mutate(max_changed_params = 1%)
+        allow save
+        forbid train
+    }
+
+    contract {
+        improve  count    (min_delta = 0.2)
+        preserve opposite (tolerance = 0.02)
+        preserve first    (tolerance = 0.02)
+        require  finite
+    }
+
+    find outlier_neurons in LM.layers[:].mlp
+    repair (strategies = [rescale_outlier_units])
+    verify
+
+    output { model, patch, findings, evidence, evaluation }
+}

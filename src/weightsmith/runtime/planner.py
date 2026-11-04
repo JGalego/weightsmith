@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from weightsmith.backends.base import Backend, Capability
 from weightsmith.compiler import ir
 from weightsmith.errors import PlanningError, UnsupportedOperation
 from weightsmith.evidence import Finding
+from weightsmith.models.hf import model_format
 from weightsmith.registry import STRATEGIES
 
 
@@ -63,6 +65,13 @@ def check_backend(program: ir.IRProgram, backend: Backend) -> None:
                 names += [("strategy", s) for s in op.strategies]
             case ir.Load(what="behavior"):
                 names.append(("metric", str(op.params.get("metric"))))
+            case ir.Load(what="model"):
+                fmt = model_format(Path(op.path))
+                if fmt is not None and not backend.supports("format", fmt):
+                    problems.append(
+                        f"model format '{fmt}' of '{op.binding}'"
+                        + (" (install the 'hf' extra)" if fmt == "hf" else "")
+                    )
         problems += [f"{kind} '{name}'" for kind, name in names if not backend.supports(kind, name)]
     if problems:
         raise UnsupportedOperation(

@@ -39,7 +39,7 @@ No gradient descent was used. The original model file is untouched. The patch is
 > [!WARNING]
 > Weightsmith is pre-alpha. The language, its standard strategies and the Python API will change without notice.
 >
-> **Status: 0.1.** The language core, compiler, effect system, PyTorch backend, patches and verification work end to end on small CPU models. Semantic operations such as "find the reasoning circuit" do not exist yet, and the compiler says so rather than pretending. See [docs/vision.md](docs/vision.md).
+> **Status: 0.2.** The language core, compiler, effect system, PyTorch backend, patches and verification work end to end on small CPU models, including Hugging Face language models addressed by role (`M.layers[1].attn.heads[2]`). Semantic operations such as "find the reasoning circuit" do not exist yet, and the compiler says so rather than pretending. See [docs/vision.md](docs/vision.md).
 
 ## Why a language
 
@@ -58,10 +58,12 @@ uv sync                      # installs CPU-only PyTorch from the PyTorch index
 uv run weightsmith --version
 ```
 
+Running Hugging Face models needs the `hf` extra (`pip install 'weightsmith[hf]'`, which adds `transformers`). The development environment that `uv sync` creates already includes it. Checking programs never needs it.
+
 ## Quick start
 
 ```bash
-uv run weightsmith fixtures                         # build the synthetic models (about 30 s, CPU)
+uv run weightsmith fixtures                         # build the synthetic models (under a minute, CPU)
 uv run weightsmith check examples/repair_mlp.wsm    # static checks only, no tensors loaded
 uv run weightsmith run   examples/repair_mlp.wsm --out out/repair
 uv run weightsmith diff  examples/fixtures/tiny_mlp_defective out/repair/model
@@ -79,15 +81,18 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | [merge_mlps.wsm](examples/merge_mlps.wsm) | `compose`: interpolate with a fine-tuned variant, transplant a layer | Both behaviours preserved |
 | [merge_unrelated.wsm](examples/merge_unrelated.wsm) | The same merge with an independently trained model | Verification **fails** (exit code 3), as it should |
 | [prune_mlp.wsm](examples/prune_mlp.wsm) | Imperative `edit`: magnitude pruning and zeroing a slice | Behaviours preserved; 17% of parameters changed |
+| [repair_tiny_llama.wsm](examples/repair_tiny_llama.wsm) | A Hugging Face Llama-style model with two amplified MLP neurons; `find outlier_neurons`, `repair`, next-token probes | Finds exactly the planted neurons; `count` rises from 0.70 to 1.00, the other tasks are preserved; 0.2% of parameters changed |
+| [head_surgery.wsm](examples/head_surgery.wsm) | Editing by role: zero one attention head, transplant a key/value head from a fine-tuned donor | All three behaviours preserved; 3.1% of parameters changed |
 
 ## Language at a glance
 
 | Construct | Example |
 |---|---|
 | Load weights only | `weights W = load("model.safetensors")` |
-| Load a runnable model | `model M = load("dir")` (with `model.safetensors` and `arch.json`) |
-| Declare a behaviour | `behavior b = probes("suite.json", metric = accuracy)` |
+| Load a runnable model | `model M = load("dir")` (weights plus `arch.json`, or a Hugging Face `config.json`) |
+| Declare a behaviour | `behavior b = probes("suite.json", metric = accuracy)`, with input vectors or next-token prompts |
 | Select parameters | `M.params["layers.*.weight"]`, then slice: `s[0..4, :]` |
+| Select by role | `M.embed`, `M.layers[0..4].mlp`, `M.layers[1].attn.heads[2]`, `M.layers[0].mlp.neurons[17]` |
 | Inspect | `inspect`, `inspect M.params["head.*"]` |
 | Search | `find outlier_rows (threshold = 8.0)`, `find anomalies (kinds = [...])` |
 | Edit | `edit { prune_magnitude s (fraction = 20%)  zero s[3, :] }` |
@@ -118,14 +123,14 @@ source (.wsm)
 | `language` | Grammar, parser, AST nodes with source spans |
 | `compiler` | Types, name resolution and checking, effects and policies, IR, lowering |
 | `registry` | Names and parameter schemas of finders, operations, strategies and metrics; torch-free |
-| `models` | Tensor manifests from safetensors headers; architecture specs |
+| `models` | Tensor manifests from safetensors headers; architecture specs; Hugging Face configs and architecture profiles (roles to tensor regions) |
 | `runtime` | Planner, executor, working copy, budgets |
 | `backends` | Backend protocol with capability declaration; the PyTorch backend |
 | `evaluation` | Probe suites, verdict semantics, run reports |
 | `artifacts` | Patch manifest schema, provenance |
 | `evidence` | Findings, evidence levels |
 | `reasoning` | Interface for optional reasoning providers; none ships in 0.1 |
-| `synthetic` | Fixture models with planted defects and known ground truth |
+| `synthetic`, `synthetic_lm` | Fixture models with planted defects and known ground truth, including a tiny Llama-style language model |
 
 ## Command line
 
@@ -134,7 +139,7 @@ source (.wsm)
 | `weightsmith check FILE` | Syntax, names, types and effects; never imports PyTorch |
 | `weightsmith compile FILE [-o out.json] [--text]` | Emit IR as JSON or readable text |
 | `weightsmith run FILE [--out DIR] [--dry-run] [--json]` | Run a `.wsm` program or compiled IR |
-| `weightsmith inspect PATH` | Statistics and structural findings for a weight file |
+| `weightsmith inspect PATH` | Statistics, architecture profile and structural findings for a weight file or model directory |
 | `weightsmith diff A B [--out DIR]` | Compare two weight sets; optionally save a patch |
 | `weightsmith apply BASE PATCH --out DIR [--reverse]` | Apply or revert a patch, checking hashes |
 | `weightsmith fixtures [DIR]` | Build the synthetic fixtures |
@@ -152,9 +157,10 @@ uv run pyright
 
 ## Known limitations
 
-- Runnable models are limited to sequential `arch.json` specs: linear, layer norm and activations. There is no attention, Hugging Face loading or tokenizer yet.
+- Runnable models are sequential `arch.json` networks or Hugging Face causal language models. Roles exist for the GPT-2 and Llama families only; other models are addressed by parameter name.
 - Finders are structural statistics. They locate anomalies in weights, not capabilities, circuits or features.
-- Behaviours are classification probe suites with an accuracy metric. There is no generative benchmark support.
+- Behaviours are classification or next-token probe suites with an accuracy metric. There is no generation, sampling or benchmark harness yet.
+- No reasoning provider ships: a language model cannot yet act as the editor.
 - Verdicts hold for the declared probe suite only. No confidence intervals are computed.
 - Patches store replacement values, so a dense patch is about twice the size of the tensors it changes.
 - Interpolating unrelated networks fails without permutation alignment, and Weightsmith does not align them.

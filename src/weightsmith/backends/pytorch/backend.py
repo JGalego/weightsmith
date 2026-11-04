@@ -9,19 +9,20 @@ import torch
 
 from weightsmith.artifacts.patch import PatchManifest
 from weightsmith.backends.base import Capability
-from weightsmith.backends.pytorch import finders, ops, patch_io
+from weightsmith.backends.pytorch import finders, hf, ops, patch_io
 from weightsmith.backends.pytorch.forward import forward
 from weightsmith.backends.pytorch.weights import (
+    WeightSet,
     content_hash,
     load_model,
     load_weights,
     save_weights,
 )
-from weightsmith.compiler.ir import IndexSpec
-from weightsmith.errors import UnsupportedOperation
+from weightsmith.compiler.ir import Region
+from weightsmith.errors import IncompatibleError, UnsupportedOperation
 from weightsmith.evaluation.probes import ProbeSuite
 from weightsmith.evidence import FinderResult, Finding
-from weightsmith.models.archspec import ArchSpec
+from weightsmith.models.hf import Architecture, HFArch, model_format, read_hf_arch
 from weightsmith.models.manifest import Manifest
 
 Tensors = dict[str, torch.Tensor]
@@ -34,17 +35,19 @@ class PyTorchBackend:
         # Version 0.1 targets small models on CPU, where extra threads only add contention.
         if num_threads is not None:
             torch.set_num_threads(num_threads)
+        self._runners: dict[str, hf.HFRunner] = {}
 
     def capabilities(self) -> frozenset[Capability]:
         return frozenset(Capability)
 
     def supports(self, kind: str, name: str) -> bool:
         table: dict[str, dict[str, Any]] = {
-            "finder": finders.FINDERS,
+            "finder": {**finders.FINDERS, **finders.UNIT_FINDERS},
             "edit": ops.EDIT_OPS,
             "compose": ops.COMPOSE_OPS,
             "strategy": ops.STRATEGIES,
             "metric": {"accuracy": None},
+            "format": {"weightsmith": None, **({"hf": None} if hf.available() else {})},
         }
         return name in table.get(kind, {}) or (kind == "finder" and name == "anomalies")
 
@@ -52,33 +55,31 @@ class PyTorchBackend:
     def load_weights(self, path: Path) -> Tensors:
         return load_weights(path).tensors
 
-    def load_model(self, path: Path) -> tuple[Tensors, ArchSpec]:
+    def load_model(self, path: Path) -> tuple[Tensors, Architecture]:
+        if model_format(path) == "hf":
+            weights = load_weights(path)
+            return weights.tensors, read_hf_arch(path, weights.manifest())
         model = load_model(path)
         return model.weights.tensors, model.arch
 
     def manifest(self, tensors: Tensors) -> Manifest:
-        from weightsmith.backends.pytorch.weights import WeightSet
-
         return WeightSet(tensors).manifest()
 
     def content_hash(self, tensors: Tensors) -> str:
         return content_hash(tensors)
 
     # analysis ---------------------------------------------------------------------------
-    def stats(
-        self, tensors: Tensors, names: list[str], index: tuple[IndexSpec, ...]
-    ) -> list[dict[str, Any]]:
+    def stats(self, tensors: Tensors, regions: list[Region]) -> list[dict[str, Any]]:
         rows = []
-        for name in names:
+        for name, mask in ops.region_masks(tensors, regions).items():
             t = tensors[name]
-            region = t[ops.region_mask(t, index)] if index else t.reshape(-1)
-            values = region.double()
+            values = t[mask].double()
             finite = values[torch.isfinite(values)]
             entry: dict[str, Any] = {
                 "name": name,
                 "shape": list(t.shape),
                 "dtype": str(t.dtype).removeprefix("torch."),
-                "numel": int(region.numel()),
+                "numel": int(values.numel()),
                 "nonfinite": int(values.numel() - finite.numel()),
                 "zeros": int((values == 0).sum()),
             }
@@ -107,33 +108,50 @@ class PyTorchBackend:
             raise UnsupportedOperation(f"the pytorch backend has no finder '{finder}'")
         return fn(tensors, names, params, binding, model_id)
 
+    def find_units(
+        self,
+        finder: str,
+        tensors: Tensors,
+        groups: list[list[tuple[str, tuple[Region, ...]]]],
+        params: dict[str, Any],
+        binding: str,
+        model_id: str,
+    ) -> FinderResult:
+        fn = finders.UNIT_FINDERS.get(finder)
+        if fn is None:
+            raise UnsupportedOperation(f"the pytorch backend has no unit finder '{finder}'")
+        return fn(tensors, groups, params, binding, model_id)
+
     # transformations ----------------------------------------------------------------------
     def edit(
-        self,
-        op: str,
-        tensors: Tensors,
-        names: list[str],
-        index: tuple[IndexSpec, ...],
-        params: dict[str, Any],
+        self, op: str, tensors: Tensors, regions: list[Region], params: dict[str, Any]
     ) -> Tensors:
         fn = ops.EDIT_OPS.get(op)
         if fn is None:
             raise UnsupportedOperation(f"the pytorch backend has no edit operation '{op}'")
         changed: Tensors = {}
-        for name in names:
+        for name, mask in ops.region_masks(tensors, regions).items():
             t = tensors[name]
-            new = fn(t, ops.region_mask(t, index), params)
+            new = fn(t, mask, params)
             if new is not t:
                 changed[name] = new
         return changed
 
     def compose(
-        self, op: str, tensors: Tensors, donor: Tensors, names: list[str], params: dict[str, Any]
+        self,
+        op: str,
+        tensors: Tensors,
+        donor: Tensors,
+        regions: list[Region],
+        params: dict[str, Any],
     ) -> Tensors:
         fn = ops.COMPOSE_OPS.get(op)
         if fn is None:
             raise UnsupportedOperation(f"the pytorch backend has no compose operation '{op}'")
-        return fn(tensors, donor, names, params)
+        missing = [r.tensor for r in regions if r.tensor not in tensors]
+        if missing:
+            raise IncompatibleError(f"the target has no parameter '{missing[0]}'")
+        return fn(tensors, donor, ops.region_masks(donor, regions), params)
 
     def repair(self, strategy: str, tensors: Tensors, finding: Finding) -> Tensors:
         fn = ops.STRATEGIES.get(strategy)
@@ -142,16 +160,36 @@ class PyTorchBackend:
         return fn(tensors, finding)
 
     # measurement ----------------------------------------------------------------------------
-    def evaluate(self, arch: ArchSpec, tensors: Tensors, suite: ProbeSuite, metric: str) -> float:
+    def evaluate(
+        self, arch: Architecture, tensors: Tensors, suite: ProbeSuite, metric: str
+    ) -> float:
         if metric != "accuracy":
             raise UnsupportedOperation(f"the pytorch backend has no metric '{metric}'")
-        x = torch.tensor([e.input for e in suite.examples], dtype=torch.float32)
-        labels = torch.tensor([e.label for e in suite.examples])
+        if isinstance(arch, HFArch):
+            if suite.kind != "tokens":
+                raise IncompatibleError(
+                    f"probe suite '{suite.name}' holds input vectors; a language model needs a "
+                    "'tokens' suite"
+                )
+            return self.runner(arch, tensors).accuracy(tensors, suite)
+        if suite.kind != "vectors":
+            raise IncompatibleError(
+                f"probe suite '{suite.name}' is a token suite, but the model is not a "
+                "language model"
+            )
+        x = torch.tensor([e.input for e in suite.vector_examples], dtype=torch.float32)
+        labels = torch.tensor([e.label for e in suite.vector_examples])
         logits = forward(arch, tensors, x)
         if suite.output_slice is not None:
             logits = logits[:, suite.output_slice[0] : suite.output_slice[1]]
         predictions = logits.argmax(dim=1)
         return float((predictions == labels).double().mean())
+
+    def runner(self, arch: HFArch, tensors: Tensors) -> hf.HFRunner:
+        key = str(arch.directory.resolve())
+        if key not in self._runners:
+            self._runners[key] = hf.HFRunner(arch, tensors)
+        return self._runners[key]
 
     def changed_params(self, before: Tensors, after: Tensors) -> dict[str, int]:
         return patch_io.changed_counts(before, after)

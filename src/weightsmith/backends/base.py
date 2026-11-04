@@ -13,9 +13,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from weightsmith.artifacts.patch import PatchManifest
+from weightsmith.compiler.ir import Region
 from weightsmith.evaluation.probes import ProbeSuite
 from weightsmith.evidence import FinderResult, Finding
-from weightsmith.models.archspec import ArchSpec
+from weightsmith.models.hf import Architecture
 from weightsmith.models.manifest import Manifest
 
 Tensors = Any  # backend-specific mapping from parameter names to tensors
@@ -39,19 +40,18 @@ class Backend(Protocol):
 
     def capabilities(self) -> frozenset[Capability]: ...
     def supports(self, kind: str, name: str) -> bool:
-        """Whether the backend implements a registry entry (kind: finder, edit, compose, ...)."""
+        """Whether the backend implements a registry entry (kind: finder, edit, compose,
+        strategy, metric) or a model format (kind: format; name: weightsmith or hf)."""
         ...
 
     # loading and identity
     def load_weights(self, path: Path) -> Tensors: ...
-    def load_model(self, path: Path) -> tuple[Tensors, ArchSpec]: ...
+    def load_model(self, path: Path) -> tuple[Tensors, Architecture]: ...
     def manifest(self, tensors: Tensors) -> Manifest: ...
     def content_hash(self, tensors: Tensors) -> str: ...
 
-    # analysis
-    def stats(
-        self, tensors: Tensors, names: list[str], index: tuple[Any, ...]
-    ) -> list[dict[str, Any]]: ...
+    # analysis; a region is a tensor name plus an optional slice
+    def stats(self, tensors: Tensors, regions: list[Region]) -> list[dict[str, Any]]: ...
     def find(
         self,
         finder: str,
@@ -61,24 +61,35 @@ class Backend(Protocol):
         binding: str,
         model_id: str,
     ) -> FinderResult: ...
+    def find_units(
+        self,
+        finder: str,
+        tensors: Tensors,
+        groups: list[list[tuple[str, tuple[Region, ...]]]],
+        params: dict[str, Any],
+        binding: str,
+        model_id: str,
+    ) -> FinderResult:
+        """Compare architectural units (heads, neurons) within each group of (role, regions)."""
+        ...
 
     # transformations: each returns only the tensors it changed
     def edit(
+        self, op: str, tensors: Tensors, regions: list[Region], params: dict[str, Any]
+    ) -> Tensors: ...
+    def compose(
         self,
         op: str,
         tensors: Tensors,
-        names: list[str],
-        index: tuple[Any, ...],
+        donor: Tensors,
+        regions: list[Region],
         params: dict[str, Any],
-    ) -> Tensors: ...
-    def compose(
-        self, op: str, tensors: Tensors, donor: Tensors, names: list[str], params: dict[str, Any]
     ) -> Tensors: ...
     def repair(self, strategy: str, tensors: Tensors, finding: Finding) -> Tensors: ...
 
     # measurement
     def evaluate(
-        self, arch: ArchSpec, tensors: Tensors, suite: ProbeSuite, metric: str
+        self, arch: Architecture, tensors: Tensors, suite: ProbeSuite, metric: str
     ) -> float: ...
     def changed_params(self, before: Tensors, after: Tensors) -> dict[str, int]: ...
     def nonfinite(self, tensors: Tensors) -> int: ...

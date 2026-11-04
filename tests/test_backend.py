@@ -9,7 +9,7 @@ import torch
 from weightsmith import registry
 from weightsmith.backends.base import Capability
 from weightsmith.backends.pytorch import PyTorchBackend, finders, ops
-from weightsmith.compiler.ir import IndexSpec
+from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.errors import IncompatibleError, UnsupportedOperation
 from weightsmith.runtime.planner import check_backend
 from weightsmith.synthetic import accuracy, plant_nan, plant_outlier_rows_for_test
@@ -18,7 +18,8 @@ BACKEND = PyTorchBackend()
 
 
 def test_registry_and_backend_agree() -> None:
-    assert set(finders.FINDERS) | {"anomalies"} == set(registry.FINDERS)
+    assert set(finders.FINDERS) | set(finders.UNIT_FINDERS) | {"anomalies"} == set(registry.FINDERS)
+    assert {n for n, f in registry.FINDERS.items() if f.unit} == set(finders.UNIT_FINDERS)
     assert set(ops.EDIT_OPS) == set(registry.EDIT_OPS)
     assert set(ops.COMPOSE_OPS) == set(registry.COMPOSE_OPS)
     assert set(ops.STRATEGIES) == set(registry.STRATEGIES)
@@ -77,7 +78,9 @@ def test_low_effective_rank() -> None:
 
 def test_edit_ops_respect_slices() -> None:
     w = torch.arange(12.0).reshape(3, 4)
-    changed = BACKEND.edit("zero", {"w": w}, ["w"], (IndexSpec("int", 1, 2), IndexSpec("all")), {})
+    changed = BACKEND.edit(
+        "zero", {"w": w}, [Region("w", (IndexSpec("int", 1, 2), IndexSpec("all")))], {}
+    )
     assert changed["w"][1].eq(0).all()
     assert torch.equal(changed["w"][0], w[0])
     assert torch.equal(w, torch.arange(12.0).reshape(3, 4)), "inputs must not be modified"
@@ -85,7 +88,7 @@ def test_edit_ops_respect_slices() -> None:
 
 def test_prune_magnitude_prunes_exact_fraction() -> None:
     w = torch.randn(10, 10, generator=torch.Generator().manual_seed(0))
-    pruned = BACKEND.edit("prune_magnitude", {"w": w}, ["w"], (), {"fraction": 0.3})["w"]
+    pruned = BACKEND.edit("prune_magnitude", {"w": w}, [Region("w")], {"fraction": 0.3})["w"]
     assert int((pruned == 0).sum()) == 30
     kept = pruned[pruned != 0].abs().min()
     assert kept >= w.abs().flatten().sort().values[29]
@@ -93,21 +96,29 @@ def test_prune_magnitude_prunes_exact_fraction() -> None:
 
 def test_low_rank_reduces_rank() -> None:
     w = torch.randn(8, 6, generator=torch.Generator().manual_seed(1))
-    approx = BACKEND.edit("low_rank", {"w": w}, ["w"], (), {"rank": 2})["w"]
+    approx = BACKEND.edit("low_rank", {"w": w}, [Region("w")], {"rank": 2})["w"]
     assert int(torch.linalg.matrix_rank(approx)) == 2
 
 
 def test_compose_rejects_shape_mismatch() -> None:
     with pytest.raises(IncompatibleError):
         BACKEND.compose(
-            "interpolate", {"w": torch.zeros(2, 2)}, {"w": torch.zeros(3, 2)}, ["w"], {"alpha": 0.5}
+            "interpolate",
+            {"w": torch.zeros(2, 2)},
+            {"w": torch.zeros(3, 2)},
+            [Region("w")],
+            {"alpha": 0.5},
         )
 
 
 def test_interpolate_endpoints() -> None:
     a, b = {"w": torch.zeros(2)}, {"w": torch.ones(2)}
-    assert torch.equal(BACKEND.compose("interpolate", a, b, ["w"], {"alpha": 0.0})["w"], a["w"])
-    assert torch.equal(BACKEND.compose("interpolate", a, b, ["w"], {"alpha": 1.0})["w"], b["w"])
+    assert torch.equal(
+        BACKEND.compose("interpolate", a, b, [Region("w")], {"alpha": 0.0})["w"], a["w"]
+    )
+    assert torch.equal(
+        BACKEND.compose("interpolate", a, b, [Region("w")], {"alpha": 1.0})["w"], b["w"]
+    )
 
 
 def test_forward_matches_reference_training_code(fixtures_dir: Path) -> None:

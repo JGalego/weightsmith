@@ -46,7 +46,10 @@ class Entry:
 
 @dataclass(frozen=True, slots=True)
 class FinderSpec(Entry):
-    pass
+    """A finder. ``unit`` finders compare architectural units (heads, neurons) and need the
+    architecture profile of the weights they examine."""
+
+    unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +82,15 @@ def _p(name: str, type_: Type, doc: str, **kw: object) -> ParamSpec:
     return ParamSpec(name, type_, doc, **kw)  # type: ignore[arg-type]
 
 
+# Shared by the norm-outlier finders. A robust z-score alone is unstable when the compared items
+# are few or nearly equal (the MAD is then tiny), so an outlier must also be min_ratio times the
+# median norm.
+_OUTLIER_PARAMS = (
+    _p("threshold", FLOAT, "Robust z-score threshold.", default=8.0, minimum=0.0),
+    _p("min_ratio", FLOAT, "Smallest norm, as a multiple of the median.", default=2.0, minimum=1.0),
+)
+
+
 FINDERS: dict[str, FinderSpec] = {
     f.name: f
     for f in [
@@ -87,14 +99,14 @@ FINDERS: dict[str, FinderSpec] = {
         FinderSpec("dead_rows", "Rows of 2-D tensors whose entries are all exactly zero."),
         FinderSpec(
             "outlier_rows",
-            "Rows of 2-D tensors whose L2 norm is a robust outlier within the tensor "
-            "(median/MAD z-score above the threshold).",
-            (_p("threshold", FLOAT, "Robust z-score threshold.", default=8.0, minimum=0.0),),
+            "Rows of 2-D tensors whose L2 norm is a robust outlier within the tensor: a "
+            "median/MAD z-score above the threshold and at least min_ratio times the median.",
+            _OUTLIER_PARAMS,
         ),
         FinderSpec(
             "outlier_tensors",
             "Tensors whose norm is a robust outlier among at least three same-shape tensors.",
-            (_p("threshold", FLOAT, "Robust z-score threshold.", default=8.0, minimum=0.0),),
+            _OUTLIER_PARAMS,
         ),
         FinderSpec(
             "duplicate_tensors",
@@ -114,17 +126,34 @@ FINDERS: dict[str, FinderSpec] = {
                 ),
             ),
         ),
+        FinderSpec(
+            "outlier_heads",
+            "Attention heads whose parameter norm is a robust outlier among comparable heads "
+            "(the same layer when it has at least 8 heads, otherwise every examined layer). "
+            "Needs an architecture profile.",
+            _OUTLIER_PARAMS,
+            unit="heads",
+        ),
+        FinderSpec(
+            "outlier_neurons",
+            "MLP neurons whose parameter norm is a robust outlier among the neurons of their "
+            "layer. Needs an architecture profile.",
+            _OUTLIER_PARAMS,
+            unit="neurons",
+        ),
     ]
 }
+STRUCTURAL_FINDERS = tuple(sorted(n for n, f in FINDERS.items() if f.unit is None))
 FINDERS["anomalies"] = FinderSpec(
     "anomalies",
-    "Runs several finders with their default parameters.",
+    "Runs several finders with their default parameters. The default runs every finder that "
+    "does not need an architecture profile.",
     (
         _p(
             "kinds",
             ListType(SymbolType("finder")),
             "Finders to run.",
-            default=tuple(sorted(FINDERS)),
+            default=STRUCTURAL_FINDERS,
         ),
     ),
 )
@@ -178,7 +207,7 @@ COMPOSE_OPS: dict[str, OpSpec] = {
         OpSpec(
             "interpolate",
             "Linear interpolation towards a donor: w <- (1 - alpha) * w + alpha * donor, over the "
-            "operand's tensors. Shapes must match.",
+            "operand's tensors or regions. Shapes must match.",
             (
                 _p(
                     "alpha",
@@ -190,13 +219,12 @@ COMPOSE_OPS: dict[str, OpSpec] = {
                 ),
             ),
             block="compose",
-            allows_slicing=False,
         ),
         OpSpec(
             "transplant",
-            "Copy the selected donor tensors into the target. Names and shapes must match.",
+            "Copy the selected donor tensors or regions (for example one attention head) into "
+            "the target. Names and shapes must match.",
             block="compose",
-            allows_slicing=False,
         ),
     ]
 }
@@ -211,6 +239,14 @@ STRATEGIES: dict[str, StrategySpec] = {
             handles=frozenset({"outlier_rows"}),
         ),
         StrategySpec(
+            "rescale_outlier_units",
+            "For each outlying head or neuron, rescale each outlying part of it (for example "
+            "the up-projection row or the down-projection column of a neuron) to the median "
+            "norm of that part across the compared units. A part is outlying when its norm is "
+            "at least the finder's min_ratio times that median; other parts are left alone.",
+            handles=frozenset({"outlier_heads", "outlier_neurons"}),
+        ),
+        StrategySpec(
             "replace_nonfinite",
             "Replace NaN and infinite entries with zero.",
             handles=frozenset({"nan_inf"}),
@@ -221,7 +257,9 @@ STRATEGIES: dict[str, StrategySpec] = {
 METRICS: dict[str, MetricSpec] = {
     "accuracy": MetricSpec(
         "accuracy",
-        "Fraction of examples whose argmax over the suite's output slice equals the label.",
+        "Fraction of examples predicted correctly: for a 'vectors' suite, the argmax over the "
+        "output slice equals the label; for a 'tokens' suite, the most likely next token "
+        "(among the candidates, if given) is the target.",
         higher_is_better=True,
     ),
 }
@@ -319,5 +357,6 @@ __all__ = [
     "REQUIREMENTS",
     "STRATEGIES",
     "STRING",
+    "STRUCTURAL_FINDERS",
     "SYMBOL_REGISTRIES",
 ]

@@ -40,6 +40,29 @@ class IndexSpec:
         return ":"
 
 
+@dataclass(frozen=True, slots=True)
+class Region:
+    """A slice of one tensor. An empty ``index`` means the whole tensor."""
+
+    tensor: str
+    index: tuple[IndexSpec, ...] = ()
+
+    def __str__(self) -> str:
+        if not self.index:
+            return self.tensor
+        return f"{self.tensor}[{', '.join(map(str, self.index))}]"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tensor": self.tensor,
+            "index": [{"kind": i.kind, "start": i.start, "stop": i.stop} for i in self.index],
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> Region:
+        return Region(data["tensor"], tuple(IndexSpec(**i) for i in data["index"]))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Op:
     kind: ClassVar[str] = "op"
@@ -70,13 +93,19 @@ class Load(Op):
 
 @dataclass(frozen=True, slots=True)
 class Select(Op):
-    """Select parameters of a weight set by glob, or restrict a selection to index ranges."""
+    """Select parameters of a weight set by glob or by architectural role, or restrict a
+    selection to index ranges.
+
+    ``role`` is a canonical role path such as ``layers[1].attn.heads[2]``; the runtime resolves it
+    against the architecture profile of the loaded weights.
+    """
 
     kind: ClassVar[str] = "select"
     out: int
     source: int
     pattern: str | None = None
     index: tuple[IndexSpec, ...] = ()
+    role: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +391,8 @@ def _op_text(op: Op) -> str:
             return f'%{op.out} = load {op.what} {op.binding} "{op.path}"{_fmt_params(op.params)}'
         case Select():
             what = f'["{op.pattern}"]' if op.pattern is not None else ""
+            if op.role is not None:
+                what += f".{op.role}"
             if op.index:
                 what += "[" + ", ".join(map(str, op.index)) + "]"
             return f"%{op.out} = select %{op.source}{what}"

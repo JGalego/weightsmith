@@ -39,6 +39,13 @@ class _Lowerer:
         return out
 
     def expr(self, expr: n.Expr) -> int:
+        role = self.file.roles.get(id(expr))
+        if role is not None:
+            binding, ref = role
+            source = self.load(self.env[binding])
+            out = self.fresh()
+            self.ops.append(ir.Select(out, source, role=str(ref), span=expr.span))
+            return out
         match expr:
             case n.Name():
                 binding = self.env[expr.ident]
@@ -48,7 +55,7 @@ class _Lowerer:
                         self.values[binding.name] = self.expr(binding.expr)
                     return self.values[binding.name]
                 return self.load(binding)
-            case n.Subscript(obj=n.Attr(obj=n.Name() as root)):
+            case n.Subscript(obj=n.Attr(obj=n.Name() as root, attr=attr)) if attr.name == "params":
                 pattern = expr.indices[0]
                 assert isinstance(pattern, n.StrLit)
                 source = self.load(self.env[root.ident])

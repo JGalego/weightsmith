@@ -8,11 +8,12 @@ from typing import Any
 
 from weightsmith.backends.base import Backend
 from weightsmith.compiler.effects import Effect, Policy
-from weightsmith.compiler.ir import IndexSpec
+from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.diagnostics import Span
 from weightsmith.errors import BudgetExceeded
 from weightsmith.evaluation.probes import ProbeSuite
-from weightsmith.models.archspec import ArchSpec
+from weightsmith.models.hf import Architecture
+from weightsmith.models.profiles import Profile
 
 
 @dataclass(slots=True)
@@ -28,8 +29,10 @@ class LoadedWeights:
     binding: str
     path: Path
     tensors: Any
-    arch: ArchSpec | None
+    arch: Architecture | None
     model_id: str
+    profile: Profile | None = None
+    profile_error: str | None = None
 
 
 @dataclass(slots=True)
@@ -42,9 +45,24 @@ class LoadedBehavior:
 
 @dataclass(frozen=True, slots=True)
 class SelectionValue:
+    """Parameters of one weight set: named tensors with one slice applied to each, or explicit
+    regions (from a role such as ``layers[1].attn.heads[2]``)."""
+
     binding: str
     names: tuple[str, ...]
     index: tuple[IndexSpec, ...] = ()
+    regions: tuple[Region, ...] | None = None
+    role: str | None = None
+
+    def region_list(self) -> list[Region]:
+        if self.regions is not None:
+            return list(self.regions)
+        return [Region(name, self.index) for name in self.names]
+
+    @property
+    def partial(self) -> bool:
+        """Whether the selection covers parts of tensors."""
+        return bool(self.index) or any(r.index for r in self.regions or ())
 
 
 Value = LoadedWeights | LoadedBehavior | SelectionValue

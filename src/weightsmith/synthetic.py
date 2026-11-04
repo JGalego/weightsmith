@@ -4,7 +4,8 @@ These fixtures are how Weightsmith tests itself: because the ground truth is kno
 check that finders locate exactly the planted components, that repairs restore the damaged
 behaviour, and that verification reports failure when an edit is harmful.
 
-Everything is built on CPU from fixed seeds in a few seconds. Nothing is downloaded.
+Everything is built on CPU from fixed seeds in under a minute. Nothing is downloaded. The language
+model fixtures (``synthetic_lm``) are built only when the ``hf`` extra is installed.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE
 
 INPUT_BITS = 8
 HIDDEN = 64
-FIXTURE_VERSION = "2"
+FIXTURE_VERSION = "3"
 
 
 def all_inputs(bits: int = INPUT_BITS) -> torch.Tensor:
@@ -203,8 +204,21 @@ def write_model_dir(
     (path / "fixture.json").write_text(json.dumps(ground_truth, indent=2) + "\n", encoding="utf-8")
 
 
+def _transformers_version() -> str | None:
+    import importlib.util
+
+    if importlib.util.find_spec("transformers") is None:
+        return None
+    import transformers
+
+    return transformers.__version__
+
+
 def _stamp() -> str:
-    return f"fixtures={FIXTURE_VERSION} weightsmith={__version__} torch={torch.__version__}"
+    return (
+        f"fixtures={FIXTURE_VERSION} weightsmith={__version__} torch={torch.__version__} "
+        f"transformers={_transformers_version()}"
+    )
 
 
 def build_all(root: Path, force: bool = False) -> dict[str, Any]:
@@ -366,6 +380,11 @@ def _build(root: Path, stamp_file: Path) -> dict[str, Any]:
             ],
         },
     )
+
+    if _transformers_version() is not None:
+        from weightsmith.synthetic_lm import build_lm_fixtures
+
+        summary.update(build_lm_fixtures(root))
 
     (root / "fixtures.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     stamp_file.write_text(_stamp())

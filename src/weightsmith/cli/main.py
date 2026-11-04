@@ -154,6 +154,8 @@ def inspect(
 ) -> None:
     """Show parameter statistics and structural findings for a weight file."""
     from weightsmith.backends.pytorch import PyTorchBackend
+    from weightsmith.compiler.ir import Region
+    from weightsmith.models.hf import read_profile
     from weightsmith.registry import FINDERS
 
     backend = PyTorchBackend()
@@ -167,7 +169,7 @@ def inspect(
     table = Table(title=f"{path}  ({model_id[:19]}...)", title_justify="left")
     for column in ("tensor", "dtype", "shape", "mean", "std", "min", "max", "non-finite"):
         table.add_column(column, justify="left" if column in ("tensor", "dtype") else "right")
-    for row in backend.stats(tensors, manifest.names(), ()):
+    for row in backend.stats(tensors, [Region(name) for name in manifest.names()]):
         table.add_row(
             escape(row["name"]),
             row["dtype"],
@@ -177,15 +179,26 @@ def inspect(
         )
     console.print(table)
     console.print(f"{len(manifest.tensors)} tensors, {manifest.numel} parameters")
+    profile, reason = read_profile(path, manifest)
+    if profile is not None:
+        summary = ", ".join(f"{k} {v}" for k, v in profile.summary().items())
+        console.print(f"Architecture profile: {escape(summary)}")
+    elif path.is_dir() and (path / "config.json").is_file():
+        console.print(f"No architecture profile: {escape(str(reason))}")
     if not find:
         return
     console.print("[bold]Structural findings[/] (evidence level: observed)")
     total = 0
     for finder, spec in FINDERS.items():
-        if finder == "anomalies":
+        if finder == "anomalies" or (spec.unit is not None and profile is None):
             continue
         params = {p.name: p.default for p in spec.params}
-        result = backend.find(finder, tensors, manifest.names(), params, str(path), model_id)
+        if spec.unit is not None:
+            assert profile is not None
+            groups = profile.unit_groups(spec.unit, list(range(profile.n_layers)))
+            result = backend.find_units(finder, tensors, groups, params, str(path), model_id)
+        else:
+            result = backend.find(finder, tensors, manifest.names(), params, str(path), model_id)
         for finding in result.findings:
             total += 1
             console.print(f"  [bold]{finder}[/]: {escape(finding.summary)}")
@@ -262,6 +275,7 @@ def apply(
     import shutil
 
     from weightsmith.backends.pytorch import PyTorchBackend
+    from weightsmith.models.hf import SIDE_FILES
     from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE
 
     backend = PyTorchBackend()
@@ -275,8 +289,9 @@ def apply(
         err.print(f"[red]error[/]: {escape(str(exc))}")
         raise typer.Exit(2) from exc
     backend.save_weights(result, out / WEIGHTS_FILE, {"weightsmith.patch": str(patch)})
-    if base.is_dir() and (base / ARCH_FILE).is_file():
-        shutil.copy(base / ARCH_FILE, out / ARCH_FILE)
+    for name in (ARCH_FILE, *SIDE_FILES) if base.is_dir() else ():
+        if (base / name).is_file():
+            shutil.copy(base / name, out / name)
     console.print(f"Wrote {escape(str(out))} ({backend.content_hash(result)})")
 
 

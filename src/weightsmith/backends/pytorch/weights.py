@@ -12,7 +12,7 @@ from safetensors.torch import load_file, save_file
 
 from weightsmith.errors import LoadError
 from weightsmith.models.archspec import ArchSpec, read_archspec
-from weightsmith.models.manifest import Manifest, TensorInfo, weights_file
+from weightsmith.models.manifest import Manifest, TensorInfo, weight_files
 
 Tensors = dict[str, torch.Tensor]
 
@@ -80,11 +80,12 @@ class Model:
 
 
 def load_weights(path: Path) -> WeightSet:
-    file = weights_file(path)
-    try:
-        tensors = load_file(str(file), device="cpu")
-    except (SafetensorError, OSError) as exc:
-        raise LoadError(f"cannot load {file}: {exc}") from exc
+    tensors: Tensors = {}
+    for file in weight_files(path):
+        try:
+            tensors.update(load_file(str(file), device="cpu"))
+        except (SafetensorError, OSError) as exc:
+            raise LoadError(f"cannot load {file}: {exc}") from exc
     return WeightSet(dict(sorted(tensors.items())), path)
 
 

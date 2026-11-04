@@ -11,7 +11,7 @@ from typing import Any
 
 import torch
 
-from weightsmith.compiler.ir import IndexSpec
+from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.errors import IncompatibleError
 from weightsmith.evidence import Finding
 
@@ -36,6 +36,17 @@ def region_mask(tensor: torch.Tensor, index: tuple[IndexSpec, ...]) -> torch.Ten
         slices.append(slice(spec.start, spec.stop))
     mask[tuple(slices)] = True
     return mask
+
+
+def region_masks(tensors: Tensors, regions: list[Region]) -> dict[str, torch.Tensor]:
+    """One mask per tensor: the union of the regions that fall in it, in first-seen order."""
+    masks: dict[str, torch.Tensor] = {}
+    for region in regions:
+        if region.tensor not in tensors:
+            raise IncompatibleError(f"there is no parameter '{region.tensor}'")
+        mask = region_mask(tensors[region.tensor], region.index)
+        masks[region.tensor] = masks[region.tensor] | mask if region.tensor in masks else mask
+    return masks
 
 
 EditFn = Callable[[torch.Tensor, torch.Tensor, dict[str, Any]], torch.Tensor]
@@ -91,11 +102,12 @@ EDIT_OPS: dict[str, EditFn] = {
     "replace_nonfinite": _replace_nonfinite,
 }
 
-ComposeFn = Callable[[Tensors, Tensors, list[str], dict[str, Any]], Tensors]
+Masks = dict[str, torch.Tensor]
+ComposeFn = Callable[[Tensors, Tensors, Masks, dict[str, Any]], Tensors]
 
 
-def _check_compatible(tensors: Tensors, donor: Tensors, names: list[str]) -> None:
-    for name in names:
+def _check_compatible(tensors: Tensors, donor: Tensors, masks: Masks) -> None:
+    for name in masks:
         if name not in tensors:
             raise IncompatibleError(f"the target has no parameter '{name}'")
         if tensors[name].shape != donor[name].shape:
@@ -105,22 +117,23 @@ def _check_compatible(tensors: Tensors, donor: Tensors, names: list[str]) -> Non
             )
 
 
-def _interpolate(
-    tensors: Tensors, donor: Tensors, names: list[str], params: dict[str, Any]
-) -> Tensors:
-    _check_compatible(tensors, donor, names)
+def _interpolate(tensors: Tensors, donor: Tensors, masks: Masks, params: dict[str, Any]) -> Tensors:
+    _check_compatible(tensors, donor, masks)
     alpha = float(params["alpha"])
+    out: Tensors = {}
+    for name, mask in masks.items():
+        mine = tensors[name]
+        mixed = ((1 - alpha) * mine.double() + alpha * donor[name].double()).to(mine.dtype)
+        out[name] = torch.where(mask, mixed, mine)
+    return out
+
+
+def _transplant(tensors: Tensors, donor: Tensors, masks: Masks, params: dict[str, Any]) -> Tensors:
+    _check_compatible(tensors, donor, masks)
     return {
-        n: ((1 - alpha) * tensors[n].double() + alpha * donor[n].double()).to(tensors[n].dtype)
-        for n in names
+        name: torch.where(mask, donor[name].to(tensors[name].dtype), tensors[name])
+        for name, mask in masks.items()
     }
-
-
-def _transplant(
-    tensors: Tensors, donor: Tensors, names: list[str], params: dict[str, Any]
-) -> Tensors:
-    _check_compatible(tensors, donor, names)
-    return {n: donor[n].clone().to(tensors[n].dtype) for n in names}
 
 
 COMPOSE_OPS: dict[str, ComposeFn] = {"interpolate": _interpolate, "transplant": _transplant}
@@ -157,7 +170,31 @@ def _repair_nonfinite(tensors: Tensors, finding: Finding) -> Tensors:
     return out
 
 
+def _rescale_outlier_units(tensors: Tensors, finding: Finding) -> Tensors:
+    """Scale each outlying part of an outlying unit down to its peers' median norm.
+
+    A part (for example a neuron's up-projection row) is outlying when its norm is at least
+    ``min_ratio`` times the median norm of the same part across the compared units.
+    """
+    measured = finding.evidence[0].measurements if finding.evidence else {}
+    parts = measured.get("parts", [])
+    min_ratio = float(measured.get("min_ratio", 2.0))
+    changed: Tensors = {}
+    for location in finding.locations:
+        for region, part in zip(location.regions, parts, strict=False):
+            current = changed.get(region.tensor, tensors[region.tensor])
+            mask = region_mask(current, region.index)
+            norm = current[mask].double().norm()
+            median = float(part["median_norm"])
+            if median > 0 and norm >= min_ratio * median:
+                factor = median / norm
+                scaled = (current.double() * factor).to(current.dtype)
+                changed[region.tensor] = torch.where(mask, scaled, current)
+    return changed
+
+
 STRATEGIES: dict[str, StrategyFn] = {
     "rescale_outlier_rows": _rescale_outlier_rows,
+    "rescale_outlier_units": _rescale_outlier_units,
     "replace_nonfinite": _repair_nonfinite,
 }

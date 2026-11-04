@@ -1,0 +1,34 @@
+// Edit a language model by architectural role instead of by tensor name.
+//
+// tiny_llama has 2 layers with 4 query heads that share 2 key/value heads, so the profile
+// resolves LM.layers[1].attn.heads[3] to that head's rows of q_proj and columns of o_proj, and
+// kv_heads[1] to a key/value head's rows of k_proj and v_proj.
+
+model LM    = load("fixtures/tiny_llama")
+model Donor = load("fixtures/tiny_llama_donor")
+behavior count    = probes("fixtures/tiny_llama/count.json",    metric = accuracy)
+behavior opposite = probes("fixtures/tiny_llama/opposite.json", metric = accuracy)
+behavior first    = probes("fixtures/tiny_llama/first.json",    metric = accuracy)
+
+program HeadSurgery {
+    target LM
+
+    policy {
+        allow probe(max_forward_passes = 1000)
+        allow mutate(max_changed_params = 4%)
+        allow save
+    }
+
+    contract {
+        preserve count    (tolerance = 0.05)
+        preserve opposite (tolerance = 0.05)
+        preserve first    (tolerance = 0.05)
+    }
+
+    inspect LM.layers[1].attn.heads[3]
+    edit { zero LM.layers[1].attn.heads[3] }
+    compose { transplant Donor.layers[0].attn.kv_heads[1] }
+    verify
+
+    output { model, patch, evaluation, summary }
+}

@@ -111,7 +111,7 @@ def report(console: Console, rep: RunReport) -> None:
         for result in rep.finder_results:
             skipped = f", {len(result.skipped)} skipped" if result.skipped else ""
             console.print(
-                f"  [dim]{result.finder}: examined {result.examined} tensor(s)"
+                f"  [dim]{result.finder}: examined {result.examined} {result.noun}(s)"
                 f"{skipped}, {len(result.findings)} finding(s)[/]"
             )
             if "evidence" in shown:

@@ -11,6 +11,7 @@ Execution order follows the IR. The default flow the semantics guarantee:
 
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,10 @@ from weightsmith.evaluation import verify as v
 from weightsmith.evaluation.probes import load_probe_suite
 from weightsmith.evaluation.report import Event, RunReport
 from weightsmith.evidence import Evidence, EvidenceLevel, Finding
-from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE, weights_file
+from weightsmith.models.archspec import ArchSpec
+from weightsmith.models.hf import SIDE_FILES, HFArch, read_profile
+from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE, weights_size
+from weightsmith.models.profiles import RoleError, parse_role
 from weightsmith.registry import FINDERS, METRICS
 from weightsmith.runtime import planner
 from weightsmith.runtime.context import (
@@ -183,7 +187,7 @@ class Executor:
             self._event(op, "ok", f"{suite.n} probes from {path.name}", n=suite.n)
             return
         try:
-            self.budgets.reserve_bytes(weights_file(path).stat().st_size, op.span)
+            self.budgets.reserve_bytes(weights_size(path), op.span)
             if op.what == "model":
                 tensors, arch = self.backend.load_model(path)
             else:
@@ -192,9 +196,13 @@ class Executor:
             exc.span = exc.span or op.span
             raise
         model_id = self.backend.content_hash(tensors)
-        value = LoadedWeights(op.binding, path, tensors, arch, model_id)
-        self.values[op.out] = value
         manifest = self.backend.manifest(tensors)
+        if isinstance(arch, HFArch):
+            profile, profile_error = arch.profile, arch.profile_error
+        else:
+            profile, profile_error = read_profile(path, manifest)
+        value = LoadedWeights(op.binding, path, tensors, arch, model_id, profile, profile_error)
+        self.values[op.out] = value
         record = {
             "binding": op.binding,
             "kind": op.what,
@@ -203,6 +211,8 @@ class Executor:
             "tensors": len(manifest.tensors),
             "params": manifest.numel,
         }
+        if profile is not None:
+            record["profile"] = profile.summary()
         self.report.inputs.append(record)
         if op.out == self.program.target:
             self.working = WorkingCopy(self.backend, tensors)
@@ -238,6 +248,21 @@ class Executor:
 
     def _select(self, op: ir.Select) -> None:
         source = self.values[op.source]
+        if op.role is not None:
+            assert isinstance(source, LoadedWeights)
+            if source.profile is None:
+                raise IncompatibleError(
+                    f"'{source.binding}' has no architecture profile, so it has no role "
+                    f"'{op.role}': {source.profile_error}",
+                    op.span,
+                )
+            try:
+                regions = source.profile.resolve(parse_role(op.role))
+            except RoleError as exc:
+                raise IncompatibleError(f"{source.binding}.{op.role}: {exc}", op.span) from exc
+            names = tuple(dict.fromkeys(r.tensor for r in regions))
+            self.values[op.out] = SelectionValue(source.binding, names, (), regions, op.role)
+            return
         if isinstance(source, LoadedWeights):
             manifest = self.backend.manifest(source.tensors)
             infos = manifest.match(op.pattern) if op.pattern is not None else list(manifest.tensors)
@@ -248,17 +273,20 @@ class Executor:
             self.values[op.out] = SelectionValue(source.binding, tuple(t.name for t in infos))
             return
         assert isinstance(source, SelectionValue)
+        if source.partial:
+            raise IncompatibleError("this selection is already a slice", op.span)
         self.values[op.out] = SelectionValue(source.binding, source.names, op.index)
 
     # analysis ------------------------------------------------------------------------------------
     def _inspect(self, op: ir.Inspect) -> None:
         selection = self._selection(op.source)
         tensors = self._tensors_of(selection.binding)
-        rows = self.backend.stats(tensors, list(selection.names), selection.index)
+        rows = self.backend.stats(tensors, selection.region_list())
         total = sum(r["numel"] for r in rows)
         self.report.inspections.append(
             {
                 "binding": selection.binding,
+                "role": selection.role,
                 "slice": [str(i) for i in selection.index],
                 "tensors": rows,
                 "total_params": total,
@@ -279,13 +307,43 @@ class Executor:
                 if kind == op.finder
                 else {p.name: p.default for p in FINDERS[kind].params}
             )
-            result = self.backend.find(
-                kind, tensors, list(selection.names), params, selection.binding, model_id
-            )
+            unit = FINDERS[kind].unit
+            if unit is not None:
+                groups = self._unit_groups(selection, unit, op)
+                result = self.backend.find_units(
+                    kind, tensors, groups, params, selection.binding, model_id
+                )
+            else:
+                result = self.backend.find(
+                    kind, tensors, list(selection.names), params, selection.binding, model_id
+                )
             self.report.finder_results.append(result)
             self.report.findings.extend(result.findings)
             found += len(result.findings)
         self._event(op, "ok", f"{found} finding(s) in '{selection.binding}'", finders=kinds)
+
+    def _unit_groups(
+        self, selection: SelectionValue, unit: str, op: ir.Find
+    ) -> list[list[tuple[str, tuple[ir.Region, ...]]]]:
+        loaded = next(
+            v
+            for v in self.values.values()
+            if isinstance(v, LoadedWeights) and v.binding == selection.binding
+        )
+        if loaded.profile is None:
+            raise IncompatibleError(
+                f"finding {unit} needs an architecture profile, and '{selection.binding}' has "
+                f"none: {loaded.profile_error}",
+                op.span,
+            )
+        role = parse_role(selection.role) if selection.role is not None else None
+        if role is not None and (role.root != "layers" or role.is_unit):
+            raise IncompatibleError(f"finding {unit} needs whole layers, not '{role}'", op.span)
+        if role is None and selection.names != tuple(self.backend.manifest(loaded.tensors).names()):
+            raise IncompatibleError(
+                f"finding {unit} needs the whole model or a layer role, not a pattern", op.span
+            )
+        return loaded.profile.unit_groups(unit, loaded.profile.layers_of(role))
 
     # mutation ------------------------------------------------------------------------------------
     def _commit(self, op: ir.Op, changes: dict[str, Any], detail: str) -> None:
@@ -311,9 +369,7 @@ class Executor:
     def _transform(self, op: ir.Transform) -> None:
         selection = self._selection(op.operand)
         assert self.working is not None
-        changes = self.backend.edit(
-            op.op, self.working.tensors, list(selection.names), selection.index, op.params
-        )
+        changes = self.backend.edit(op.op, self.working.tensors, selection.region_list(), op.params)
         self._commit(op, changes, f"{op.op} on {len(selection.names)} tensor(s)")
 
     def _compose(self, op: ir.Compose) -> None:
@@ -321,7 +377,7 @@ class Executor:
         assert self.working is not None
         donor = self._tensors_of(selection.binding)
         changes = self.backend.compose(
-            op.op, self.working.tensors, donor, list(selection.names), op.params
+            op.op, self.working.tensors, donor, selection.region_list(), op.params
         )
         self._commit(
             op, changes, f"{op.op} with '{selection.binding}' over {len(selection.names)} tensor(s)"
@@ -493,10 +549,15 @@ class Executor:
                 "weightsmith.program_hash": self.report.program_hash,
             }
             self.backend.save_weights(self.working.tensors, model_dir / WEIGHTS_FILE, metadata)
-            if target.arch is not None:
+            if isinstance(target.arch, ArchSpec):
                 (model_dir / ARCH_FILE).write_text(
                     target.arch.model_dump_json(indent=2) + "\n", encoding="utf-8"
                 )
+            source_dir = target.path if target.path.is_dir() else None
+            for name in SIDE_FILES if source_dir is not None else ():
+                assert source_dir is not None
+                if (source_dir / name).is_file():
+                    shutil.copy(source_dir / name, model_dir / name)
             self.report.artifacts["model"] = str(model_dir)
         if "patch" in op.outputs:
             patch_dir = self.out_dir / "patch"

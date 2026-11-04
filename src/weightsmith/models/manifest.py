@@ -15,6 +15,7 @@ from pathlib import Path
 from weightsmith.errors import LoadError
 
 WEIGHTS_FILE = "model.safetensors"
+SHARD_INDEX = "model.safetensors.index.json"
 ARCH_FILE = "arch.json"
 _MAX_HEADER = 100 * 1024 * 1024
 
@@ -57,23 +58,41 @@ class Manifest:
         return {t.name: t.shape for t in self.tensors}
 
 
-def weights_file(path: Path) -> Path:
-    """Resolve a ``load`` path to the safetensors file it designates."""
+def weight_files(path: Path) -> list[Path]:
+    """Resolve a ``load`` path to the safetensors file(s) it designates.
+
+    A directory holds either one ``model.safetensors`` or, for sharded Hugging Face checkpoints,
+    a ``model.safetensors.index.json`` naming the shards.
+    """
     if path.is_dir():
-        candidate = path / WEIGHTS_FILE
-        if not candidate.is_file():
-            raise LoadError(f"{path} is a directory without a {WEIGHTS_FILE}")
-        return candidate
+        single = path / WEIGHTS_FILE
+        if single.is_file():
+            return [single]
+        index = path / SHARD_INDEX
+        if index.is_file():
+            try:
+                weight_map = json.loads(index.read_text(encoding="utf-8"))["weight_map"]
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                raise LoadError(f"{index} is not a valid shard index: {exc}") from exc
+            shards = [path / name for name in sorted(set(weight_map.values()))]
+            missing = [s.name for s in shards if not s.is_file()]
+            if missing:
+                raise LoadError(f"{path} is missing shard(s): {', '.join(missing)}")
+            return shards
+        raise LoadError(f"{path} is a directory without {WEIGHTS_FILE} or {SHARD_INDEX}")
     if path.suffix != ".safetensors":
         raise LoadError(f"{path} is not a .safetensors file or a model directory")
     if not path.is_file():
         raise LoadError(f"{path} does not exist")
-    return path
+    return [path]
 
 
-def read_manifest(path: Path) -> Manifest:
-    """Read the manifest of a safetensors file (or of a model directory's weights file)."""
-    file = weights_file(path)
+def weights_size(path: Path) -> int:
+    """Total size in bytes of the safetensors file(s) behind a ``load`` path."""
+    return sum(f.stat().st_size for f in weight_files(path))
+
+
+def _read_header(file: Path) -> dict[str, object]:
     with file.open("rb") as handle:
         prefix = handle.read(8)
         if len(prefix) != 8:
@@ -85,10 +104,19 @@ def read_manifest(path: Path) -> Manifest:
             header = json.loads(handle.read(length))
         except json.JSONDecodeError as exc:
             raise LoadError(f"{file} has a malformed safetensors header: {exc.msg}") from exc
-    infos = [
-        TensorInfo(name, str(meta["dtype"]), tuple(int(d) for d in meta["shape"]))
-        for name, meta in header.items()
-        if name != "__metadata__"
-    ]
-    infos.sort(key=lambda t: t.name)
-    return Manifest(tuple(infos))
+    if not isinstance(header, dict):
+        raise LoadError(f"{file} has a malformed safetensors header")
+    return header
+
+
+def read_manifest(path: Path) -> Manifest:
+    """Read the manifest of a safetensors file, or of a model directory's weights (all shards)."""
+    infos: dict[str, TensorInfo] = {}
+    for file in weight_files(path):
+        for name, meta in _read_header(file).items():
+            if name == "__metadata__" or not isinstance(meta, dict):
+                continue
+            if name in infos:
+                raise LoadError(f"tensor '{name}' appears in more than one shard of {path}")
+            infos[name] = TensorInfo(name, str(meta["dtype"]), tuple(int(d) for d in meta["shape"]))
+    return Manifest(tuple(sorted(infos.values(), key=lambda t: t.name)))

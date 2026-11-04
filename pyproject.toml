@@ -1,6 +1,6 @@
 [project]
 name = "weightsmith"
-version = "0.1.0"
+version = "0.2.0"
 description = "A programming language for weight-space programming: inspect, transform, compose and verify neural networks at the level of their parameters."
 readme = "README.md"
 license = "Apache-2.0"
@@ -28,6 +28,10 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.optional-dependencies]
+# Run Hugging Face model directories (config.json + safetensors). `check` never needs it.
+hf = ["transformers>=5.0"]
+
 [project.scripts]
 weightsmith = "weightsmith.cli.main:main"
 wsmith = "weightsmith.cli.main:main"
@@ -36,7 +40,7 @@ wsmith = "weightsmith.cli.main:main"
 weightsmith = "weightsmith.language.highlight:WeightsmithLexer"
 
 [dependency-groups]
-dev = ["pytest>=8.2", "ruff>=0.6", "pyright>=1.1.380"]
+dev = ["pytest>=8.2", "ruff>=0.6", "pyright>=1.1.380", "transformers>=5.0"]
 
 [build-system]
 requires = ["hatchling>=1.24"]

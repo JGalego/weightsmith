@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from weightsmith.compiler.ir import Region
+
 
 class EvidenceLevel(StrEnum):
     HYPOTHESISED = "hypothesised"
@@ -46,15 +48,30 @@ class Evidence:
 
 @dataclass(frozen=True, slots=True)
 class Location:
-    """A place in a weight set: a tensor, optionally restricted to some rows."""
+    """A place in a weight set: a tensor, optionally restricted to some rows, or an architectural
+    unit (a head, a neuron) named by its role path and made of tensor regions."""
 
     tensor: str
     rows: tuple[int, ...] | None = None
+    unit: str | None = None
+    regions: tuple[Region, ...] = ()
 
     def __str__(self) -> str:
+        if self.unit is not None:
+            return self.unit
         if self.rows is None:
             return self.tensor
         return f"{self.tensor}[rows {', '.join(map(str, self.rows))}]"
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "tensor": self.tensor,
+            "rows": list(self.rows) if self.rows is not None else None,
+        }
+        if self.unit is not None:
+            out["unit"] = self.unit
+            out["regions"] = [str(r) for r in self.regions]
+        return out
 
 
 @dataclass(slots=True)
@@ -84,10 +101,7 @@ class Finding:
             "model_id": self.model_id,
             "summary": self.summary,
             "level": self.level.value,
-            "locations": [
-                {"tensor": loc.tensor, "rows": list(loc.rows) if loc.rows is not None else None}
-                for loc in self.locations
-            ],
+            "locations": [loc.to_dict() for loc in self.locations],
             "evidence": [e.to_dict() for e in self.evidence],
             "limitations": list(self.limitations),
         }
@@ -100,12 +114,14 @@ class FinderResult:
     finder: str
     findings: tuple[Finding, ...]
     examined: int
-    skipped: tuple[tuple[str, str], ...] = ()  # (tensor, reason)
+    skipped: tuple[tuple[str, str], ...] = ()  # (tensor or group, reason)
+    noun: str = "tensor"  # what ``examined`` counts: tensors, heads or neurons
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "finder": self.finder,
             "found": len(self.findings),
             "examined": self.examined,
+            "unit": self.noun,
             "skipped": [{"tensor": t, "reason": r} for t, r in self.skipped],
         }

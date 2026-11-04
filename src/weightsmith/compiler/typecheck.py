@@ -16,6 +16,7 @@ from typing import Any
 
 from weightsmith import registry as reg
 from weightsmith.compiler.effects import Policy, effective_policy, policy_from_block
+from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.compiler.types import (
     BOOL,
     FLOAT,
@@ -37,7 +38,16 @@ from weightsmith.errors import LoadError
 from weightsmith.evaluation.probes import ProbeSuite, load_probe_suite
 from weightsmith.language import nodes as n
 from weightsmith.models.archspec import ArchSpec, read_archspec
+from weightsmith.models.hf import HFArch, model_format, read_hf_arch
 from weightsmith.models.manifest import Manifest, read_manifest
+from weightsmith.models.profiles import (
+    COMPONENTS,
+    ROLE_ROOTS,
+    UNITS,
+    Profile,
+    RoleError,
+    RoleRef,
+)
 
 # --------------------------------------------------------------------------- results
 
@@ -51,6 +61,9 @@ class Binding:
     path: Path | None = None
     manifest: Manifest | None = None
     arch: ArchSpec | None = None
+    hf: HFArch | None = None
+    profile: Profile | None = None
+    profile_error: str | None = None
     suite: ProbeSuite | None = None
     params: dict[str, Any] = field(default_factory=dict)
     expr: n.Expr | None = None  # for selections
@@ -64,6 +77,13 @@ class SelectionInfo:
     pattern: str | None  # None means every parameter
     index: tuple[n.Index, ...]
     names: tuple[str, ...] | None  # resolved parameter names when the manifest is known
+    role: RoleRef | None = None
+    regions: tuple[Region, ...] | None = None  # resolved role regions when the profile is known
+
+    @property
+    def sliced(self) -> bool:
+        """Whether the selection covers parts of tensors rather than whole tensors."""
+        return bool(self.index) or (self.role is not None and self.role.is_unit)
 
 
 @dataclass(slots=True)
@@ -83,6 +103,7 @@ class CheckedFile:
     bindings: dict[str, Binding]
     file_policy: Policy | None
     programs: dict[str, CheckedProgram]
+    roles: dict[int, tuple[str, RoleRef]] = field(default_factory=dict)  # id(expr) -> role
 
 
 # --------------------------------------------------------------------------- helpers
@@ -120,6 +141,7 @@ class Checker:
         self.sink = sink
         self.bindings: dict[str, Binding] = {}
         self._selections: dict[int, SelectionInfo | None] = {}
+        self._roles: dict[int, _RoleResult] = {}
 
     # diagnostics shortcuts --------------------------------------------------------
     def name_error(self, code: str, msg: str, span: Span | None, *notes: str) -> None:
@@ -182,7 +204,8 @@ class Checker:
                 programs[program.name.name] = checked
         if not programs and not self.sink.has_errors():
             self.warn("W301", "this file declares no program", None)
-        return CheckedFile(self.file, self.base_dir, self.bindings, file_policy, programs)
+        roles = {k: (r.binding, r.ref) for k, r in self._roles.items() if isinstance(r, _Role)}
+        return CheckedFile(self.file, self.base_dir, self.bindings, file_policy, programs, roles)
 
     def _declare(self, decl: n.LoadDecl | n.BehaviorDecl | n.SelectionDecl) -> None:
         name = decl.name
@@ -225,12 +248,14 @@ class Checker:
                 "parameter names and shapes will be checked at run time",
             )
             return
-        if decl.kind == "model" and not path.is_dir():
+        fmt = model_format(path)
+        if decl.kind == "model" and fmt is None:
             self.type_error(
                 "E304",
-                "a model is loaded from a directory containing model.safetensors and arch.json",
+                "a model is loaded from a directory containing its weights and either arch.json "
+                "(a Weightsmith architecture) or config.json (a Hugging Face model)",
                 decl.path.span,
-                "use 'weights' to load a bare .safetensors file without an architecture",
+                "use 'weights' to load tensors without an architecture",
             )
             return
         try:
@@ -238,6 +263,17 @@ class Checker:
         except LoadError as exc:
             self.type_error("E305", f"cannot read weights: {exc}", decl.path.span)
             return
+        if fmt == "hf":
+            try:
+                hf = read_hf_arch(path, binding.manifest)
+            except LoadError as exc:
+                self.type_error("E306", str(exc), decl.path.span)
+                return
+            binding.profile, binding.profile_error = hf.profile, hf.profile_error
+            if decl.kind == "model":
+                binding.hf = hf
+            return
+        binding.profile_error = "it has no Hugging Face config.json"
         if decl.kind == "model":
             try:
                 arch = read_archspec(path)
@@ -280,6 +316,12 @@ class Checker:
         return binding
 
     def type_of(self, expr: n.Expr, env: dict[str, Binding]) -> Type | None:
+        if isinstance(expr, n.Attr | n.Subscript):
+            role = self.role_of(expr, env)
+            if isinstance(role, _Role):
+                return SelectionType(role.binding, sliced=role.ref.is_unit)
+            if role is _INVALID:
+                return None
         match expr:
             case n.Name():
                 binding = self.lookup(expr.ident, expr.span, env)
@@ -290,11 +332,14 @@ class Checker:
                     return None
                 if isinstance(obj, WeightsType) and expr.attr.name == "params" and obj.binding:
                     return ParamsType(obj.binding)
+                notes = ["weight sets have the attribute params"]
+                if isinstance(obj, WeightsType):
+                    notes.append(
+                        "with an architecture profile they also have the roles "
+                        + ", ".join(ROLE_ROOTS)
+                    )
                 self.type_error(
-                    "E310",
-                    f"{obj} has no attribute '{expr.attr.name}'",
-                    expr.attr.span,
-                    "weight sets and models have one attribute: params",
+                    "E310", f"{obj} has no attribute '{expr.attr.name}'", expr.attr.span, *notes
                 )
                 return None
             case n.Subscript():
@@ -339,6 +384,152 @@ class Checker:
         )
         return None
 
+    # architectural roles ------------------------------------------------------------------
+    def role_of(self, expr: n.Attr | n.Subscript, env: dict[str, Binding]) -> _RoleResult:
+        """Whether ``expr`` is a whole role path such as ``M.layers[1].attn.heads[2]``.
+
+        Returns the role, ``_NOT_ROLE`` when the expression is something else (``M.params[...]``,
+        or a slice applied to a role), or ``_INVALID`` after reporting an error. Memoised so each
+        problem is reported once.
+        """
+        key = id(expr)
+        if key not in self._roles:
+            self._roles[key] = self._role_of(expr, env)
+        return self._roles[key]
+
+    def _role_of(self, expr: n.Attr | n.Subscript, env: dict[str, Binding]) -> _RoleResult:
+        steps: list[n.Ident | n.Subscript] = []
+        node: n.Expr = expr
+        while isinstance(node, n.Attr | n.Subscript):
+            steps.append(node.attr if isinstance(node, n.Attr) else node)
+            node = node.obj
+        steps.reverse()
+        if not isinstance(node, n.Name) or not steps or not isinstance(steps[0], n.Ident):
+            return _NOT_ROLE
+        if steps[0].name not in ROLE_ROOTS:
+            return _NOT_ROLE
+        binding = self.lookup(node.ident, node.span, env)
+        if binding is None:
+            return _INVALID
+        if binding.kind not in ("model", "weights"):
+            self.type_error(
+                "E310", f"{binding.type} has no attribute '{steps[0].name}'", steps[0].span
+            )
+            return _INVALID
+        ref = self._parse_role(steps, expr)
+        if ref is None or isinstance(ref, _NotRole):
+            return _NOT_ROLE if isinstance(ref, _NotRole) else _INVALID
+        if binding.manifest is not None and binding.profile is None:
+            self.type_error(
+                "E316",
+                f"'{binding.name}' has no architecture profile, so it has no role '{ref.root}'",
+                steps[0].span,
+                f"reason: {binding.profile_error}",
+                f'select parameters by name instead: {binding.name}.params["pattern"]',
+            )
+            return _INVALID
+        regions: tuple[Region, ...] | None = None
+        if binding.profile is not None:
+            try:
+                regions = binding.profile.resolve(ref)
+            except RoleError as exc:
+                self.type_error("E510", f"{binding.name}.{ref}: {exc}", expr.span)
+                return _INVALID
+            if not regions:
+                self.type_error("E511", f"{binding.name}.{ref} selects no parameters", expr.span)
+                return _INVALID
+            if ref.root == "unembed" and binding.profile.tied:
+                self.warn(
+                    "W305",
+                    f"'{binding.name}' ties its output projection to its token embeddings; "
+                    "unembed selects the embeddings, so editing it also changes the input side",
+                    expr.span,
+                )
+        return _Role(binding.name, ref, regions)
+
+    def _parse_role(
+        self, steps: list[n.Ident | n.Subscript], expr: n.Expr
+    ) -> RoleRef | _NotRole | None:
+        """Consume role steps. A subscript after a complete role is a slice, not part of it."""
+        root = steps[0]
+        assert isinstance(root, n.Ident)
+        rest = steps[1:]
+        if root.name != "layers":
+            if rest and isinstance(rest[0], n.Ident):
+                self.type_error("E317", f"'{root.name}' has no part '{rest[0].name}'", rest[0].span)
+                return None
+            return RoleRef(root.name) if not rest else _NotRole()
+        layers = self._role_index(rest, "layers", root.span)
+        if layers is None:
+            return None
+        rest = rest[1:]
+        if not rest:
+            return RoleRef("layers", layers)
+        if isinstance(rest[0], n.Subscript):
+            return _NotRole()
+        component = rest[0]
+        if component.name not in COMPONENTS:
+            self.type_error(
+                "E317",
+                f"a layer has no part '{component.name}'",
+                component.span,
+                f"parts: {', '.join(COMPONENTS)}",
+            )
+            return None
+        rest = rest[1:]
+        if not rest:
+            return RoleRef("layers", layers, component.name)
+        if isinstance(rest[0], n.Subscript):
+            return _NotRole()
+        unit = rest[0]
+        units = UNITS.get(component.name, {})
+        if unit.name not in units:
+            options = f"units: {', '.join(units)}" if units else "it has no indexed units"
+            self.type_error(
+                "E317", f"'{component.name}' has no part '{unit.name}'", unit.span, options
+            )
+            return None
+        index = self._role_index(rest[1:], unit.name, unit.span)
+        if index is None:
+            return None
+        if len(rest) > 2:
+            follow = rest[2]
+            if isinstance(follow, n.Ident):
+                self.type_error("E317", f"'{unit.name}' has no part '{follow.name}'", follow.span)
+            else:
+                self.type_error(
+                    "E313", "a head or neuron selection is already a slice", follow.span
+                )
+            return None
+        return RoleRef("layers", layers, component.name, unit.name, index)
+
+    def _role_index(
+        self, rest: list[n.Ident | n.Subscript], what: str, span: Span
+    ) -> IndexSpec | None:
+        example = f"{what}[3], {what}[0..4] or {what}[:]"
+        if not rest or not isinstance(rest[0], n.Subscript):
+            self.type_error("E318", f"'{what}' needs an index", span, f"for example {example}")
+            return None
+        sub = rest[0]
+        if len(sub.indices) != 1:
+            self.type_error("E318", f"'{what}' takes one index", sub.span, f"for example {example}")
+            return None
+        match sub.indices[0]:
+            case n.IntLit() as i:
+                return IndexSpec("int", i.value, i.value + 1)
+            case n.RangeIndex() as r:
+                if r.start >= r.stop:
+                    self.type_error("E318", f"empty range {r.start}..{r.stop}", r.span)
+                    return None
+                return IndexSpec("range", r.start, r.stop)
+            case n.FullIndex():
+                return IndexSpec("all")
+            case other:
+                self.type_error(
+                    "E318", f"'{what}' is indexed by integers", other.span, f"for example {example}"
+                )
+                return None
+
     def selection(self, expr: n.Expr, env: dict[str, Binding]) -> SelectionInfo | None:
         """Describe a selection-typed (or weights-typed) expression and check it statically.
 
@@ -350,6 +541,17 @@ class Checker:
         return self._selections[key]
 
     def _selection(self, expr: n.Expr, env: dict[str, Binding]) -> SelectionInfo | None:
+        if isinstance(expr, n.Attr | n.Subscript):
+            role = self.role_of(expr, env)
+            if isinstance(role, _Role):
+                names = (
+                    tuple(dict.fromkeys(r.tensor for r in role.regions))
+                    if role.regions is not None
+                    else None
+                )
+                return SelectionInfo(role.binding, None, (), names, role.ref, role.regions)
+            if role is _INVALID:
+                return None
         match expr:
             case n.Name():
                 binding = env.get(expr.ident)
@@ -386,8 +588,12 @@ class Checker:
                 base = self.selection(expr.obj, env)
                 if base is None:
                     return None
+                if base.sliced:
+                    return None  # reported by the type check of this expression
                 self._check_slice(expr, base, env)
-                return SelectionInfo(base.binding, base.pattern, expr.indices, base.names)
+                return SelectionInfo(
+                    base.binding, base.pattern, expr.indices, base.names, base.role, base.regions
+                )
             case _:
                 return None
 
@@ -690,7 +896,9 @@ class Checker:
                 return
             if isinstance(typ, SelectionType) and typ.sliced:
                 self.type_error(
-                    "E343", "finders operate on whole tensors; remove the slice", stmt.scope.span
+                    "E343",
+                    "finders search whole tensors or layers, not a slice, head or neuron",
+                    stmt.scope.span,
                 )
                 return
             if not isinstance(typ, SelectionType | WeightsType):
@@ -699,9 +907,59 @@ class Checker:
             root = typ.binding or root
         values = self.check_kwargs(stmt.kwargs, spec.params, spec.name, stmt.span)
         checked.kwargs[id(stmt)] = values
+        kinds = values.get("kinds", ()) if spec.name == "anomalies" else (spec.name,)
+        unit_finders = [k for k in kinds if k in reg.FINDERS and reg.FINDERS[k].unit]
+        if unit_finders:
+            self._check_unit_scope(stmt, unit_finders, env.get(root), env)
         if root == state.target.name:
             kinds = values.get("kinds", ()) if spec.name == "anomalies" else (spec.name,)
             state.target_finders.update(kinds)
+
+    def _check_unit_scope(
+        self, stmt: n.FindStmt, finders: list[str], binding: Binding | None, env: dict[str, Binding]
+    ) -> None:
+        """Unit finders compare heads or neurons: they need a profile and whole layers."""
+        what = ", ".join(finders)
+        if binding is not None and binding.manifest is not None and binding.profile is None:
+            self.type_error(
+                "E319",
+                f"{what} needs an architecture profile, and '{binding.name}' has none",
+                stmt.finder.span,
+                f"reason: {binding.profile_error}",
+            )
+            return
+        if stmt.scope is None or isinstance(stmt.scope, n.Name):
+            if isinstance(stmt.scope, n.Name) and env.get(stmt.scope.ident) is not None:
+                scoped = env[stmt.scope.ident]
+                if scoped.kind == "selection":
+                    info = self.selection(stmt.scope, env)
+                    if info is None or info.role is None or info.role.root != "layers":
+                        self.type_error(
+                            "E319",
+                            f"{what} searches whole layers: use the model or a role such as "
+                            "M.layers[0..4], M.layers[1].attn or M.layers[1].mlp",
+                            stmt.scope.span,
+                        )
+            return
+        info = self.selection(stmt.scope, env)
+        if info is None:
+            return
+        if info.role is None or info.role.root != "layers" or info.index:
+            self.type_error(
+                "E319",
+                f"{what} searches whole layers: use the model or a role such as "
+                "M.layers[0..4], M.layers[1].attn or M.layers[1].mlp",
+                stmt.scope.span,
+            )
+            return
+        for finder in finders:
+            needed = "attn" if reg.FINDERS[finder].unit in ("heads", "kv_heads") else "mlp"
+            if info.role.component not in (None, needed):
+                self.type_error(
+                    "E319",
+                    f"{finder} looks in '{needed}', but the scope is '{info.role.component}'",
+                    stmt.scope.span,
+                )
 
     def _operand(self, op: n.OpStmt, env: dict[str, Binding]) -> tuple[Type, SelectionInfo] | None:
         typ = self.type_of(op.operand, env)
@@ -745,9 +1003,11 @@ class Checker:
                 "use compose to bring parameters in from another model",
             )
             return
-        if info.index and not spec.allows_slicing:
+        if info.sliced and not spec.allows_slicing:
             self.type_error(
-                "E347", f"'{spec.name}' works on whole tensors; remove the slice", op.operand.span
+                "E347",
+                f"'{spec.name}' works on whole tensors; it cannot take a slice, a head or a neuron",
+                op.operand.span,
             )
         if spec.requires_2d:
             self._require_2d(op, info, state.target)
@@ -795,7 +1055,7 @@ class Checker:
                 op.operand.span,
             )
             return
-        if info.index:
+        if info.sliced and not spec.allows_slicing:
             self.type_error(
                 "E347", f"'{spec.name}' works on whole tensors; remove the slice", op.operand.span
             )
@@ -885,7 +1145,38 @@ class Checker:
         suite = behavior.suite
         if suite is None:
             return
-        if target.arch is not None:
+        if suite.kind == "tokens" and target.arch is not None:
+            self.type_error(
+                "E512",
+                f"probe suite '{behavior.name}' is a token suite, but '{target.name}' is not a "
+                "language model",
+                span,
+            )
+        if suite.kind == "vectors" and target.hf is not None:
+            self.type_error(
+                "E512",
+                f"probe suite '{behavior.name}' holds input vectors, but '{target.name}' is a "
+                "language model; use a 'tokens' suite",
+                span,
+            )
+        if suite.kind == "tokens" and target.hf is not None:
+            if suite.needs_tokenizer and not target.hf.has_tokenizer:
+                self.type_error(
+                    "E513",
+                    f"probe suite '{behavior.name}' contains text, but '{target.name}' has no "
+                    "tokenizer files",
+                    span,
+                    "give prompt_ids and target_id instead, or add tokenizer.json",
+                )
+            top = suite.max_token_id()
+            if top is not None and top >= target.hf.vocab_size:
+                self.type_error(
+                    "E514",
+                    f"probe suite '{behavior.name}' uses token id {top}, but '{target.name}' has "
+                    f"a vocabulary of {target.hf.vocab_size}",
+                    span,
+                )
+        if target.arch is not None and suite.kind == "vectors":
             if suite.input_width != target.arch.inputs:
                 self.type_error(
                     "E508",
@@ -946,6 +1237,26 @@ class Checker:
                 self.type_error(
                     "E353", f"output '{name}' needs {what} earlier in the program", item.span
                 )
+
+
+@dataclass(frozen=True, slots=True)
+class _Role:
+    binding: str
+    ref: RoleRef
+    regions: tuple[Region, ...] | None
+
+
+class _NotRole:
+    """Marker: the expression is not a role path."""
+
+
+class _Invalid:
+    """Marker: the expression was a role path with an error, already reported."""
+
+
+_NOT_ROLE = _NotRole()
+_INVALID = _Invalid()
+_RoleResult = _Role | _NotRole | _Invalid
 
 
 @dataclass(slots=True)

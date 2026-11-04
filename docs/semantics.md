@@ -1,6 +1,6 @@
 # Weightsmith language semantics
 
-Language version 0.1. This document defines the language. The Python package is one implementation of it; where the implementation and this document disagree, the implementation has a bug.
+Language version 0.2. This document defines the language. The Python package is one implementation of it; where the implementation and this document disagree, the implementation has a bug.
 
 ## 1. Model of computation
 
@@ -69,13 +69,24 @@ Paths in `load` and `probes` are resolved relative to the directory of the sourc
 | Declaration | Meaning |
 |---|---|
 | `weights W = load(p)` | `p` is a `.safetensors` file or a directory containing `model.safetensors`. `W` has type `WeightSet`. It can be inspected, searched, edited and composed, but never run. |
-| `model M = load(p)` | `p` is a directory with `model.safetensors` and `arch.json`. `M` has type `Model`, a `WeightSet` with an architecture, so it can also be probed. |
+| `model M = load(p)` | `p` is a directory with weights and an architecture: either `arch.json` (a Weightsmith sequential network) or a Hugging Face `config.json` (a causal language model). `M` has type `Model`, a `WeightSet` with an architecture, so it can also be probed. Running a Hugging Face model needs the `hf` extra; checking it does not. |
 | `behavior B = probes(p, metric = m)` | A probe suite (`weightsmith.probes/v0` JSON) plus a metric. `B` has type `Behavior`. |
 | `selection S = expr` | A named selection, usable in every program of the file. |
 | `policy { ... }` | The file-level policy (section 8). At most one per file. |
 | `program P { target T ... }` | A program whose target is the `model` or `weights` binding `T`. |
 
+A model directory's weights are `model.safetensors`, or the shards named by `model.safetensors.index.json`. A weight set loaded with `weights` from a directory that has a `config.json` gets an architecture profile (section 6) but still cannot run.
+
 A behaviour is operational. `behavior parity = probes(...)` fixes how parity is *measured*. It says nothing about where or how a model computes parity.
+
+**Probe suites** come in two kinds, both in `weightsmith.probes/v0` JSON:
+
+| `kind` | Examples | Model | Prediction |
+|---|---|---|---|
+| `vectors` (default) | `{"input": [...], "label": k}` | an `arch.json` model | argmax over `output_slice` of the outputs |
+| `tokens` | `{"prompt": "...", "target": "..."}`, or `prompt_ids` and `target_id` | a Hugging Face model | the most likely next token after the prompt |
+
+A text prompt is tokenized with the model's tokenizer, special tokens included, as the model would see it. A text target must be exactly one token when tokenized without special tokens; include a leading space if the tokenizer needs it. A `tokens` suite may list `candidates` (text) or `candidate_ids`: the prediction is then the most likely candidate, which makes the suite a multiple-choice test. Text needs tokenizer files in the model directory; token ids do not.
 
 ## 5. Types
 
@@ -95,15 +106,32 @@ Version 0.1 syntax cannot name `Finding`, `Evidence` or `Patch` values directly.
 
 **Selections.** `M.params["glob"]` selects every parameter of `M` whose name matches the glob (`*`, `?`, `[...]`, as in `fnmatch`, case-sensitive). A glob matching nothing is an error. `S[i, a..b, :]` restricts an unsliced selection to an index region, one index per leading dimension. Sliced selections cannot be sliced again. `M` alone, where a selection is expected, means every parameter of `M`.
 
+**Roles.** A weight set with an architecture profile can also be selected by role:
+
+| Role | Selects |
+|---|---|
+| `M.embed` | token embeddings, and position embeddings if the model has them |
+| `M.unembed` | the output projection; the token embeddings if they are tied (warning W305) |
+| `M.final_norm` | the normalisation after the last block |
+| `M.layers[i]` | every parameter of block `i`; `i` is an index, a range `a..b` or `:` |
+| `M.layers[i].attn`, `.mlp`, `.norms` | the attention, MLP or normalisation parameters of those blocks |
+| `M.layers[i].attn.heads[j]` | query head `j`: its rows of the query projection and its slice of the output projection, plus its key and value parts when no other head shares them |
+| `M.layers[i].attn.kv_heads[g]` | key/value head `g`: its rows of the key and value projections |
+| `M.layers[i].mlp.neurons[j]` | MLP neuron `j`: its row of each input projection (gate and up, or `c_fc`) and its slice of the output projection |
+
+A head or neuron selection is a set of regions in several tensors; it counts as sliced, so it cannot be sliced again, searched, or passed to an operation that needs whole tensors. A whole-tensor role such as `M.layers[1].mlp` or `M.embed` can be sliced like any other selection. Indices are checked against the profile.
+
+Profiles exist for two families, chosen by `model_type` in `config.json`: `gpt2` (fused query/key/value projection stored as `(in, out)`) and `llama` (`llama`, `mistral`, `qwen2`, `qwen3`, `gemma3_text`; separate projections stored as `(out, in)`, with grouped-query attention). A profile is built only if every tensor it relies on exists with the shape the configuration implies. Other models load and run, but only `params` selections are available.
+
 **`let x = e`** binds a selection inside a program. Names cannot be rebound or shadow declarations.
 
 **`inspect [e]`** records per-tensor statistics (shape, dtype, count, mean, std, min, max, L2 norm, zeros, non-finite) for `e`, or for the whole target. On the target it reads the working copy as it stands at that point.
 
-**`find f [in e] [(args)]`** runs finder `f` over `e`, default the whole target, and records findings at evidence level `observed`. `e` must be unsliced. `anomalies (kinds = [...])` runs several finders with their default parameters.
+**`find f [in e] [(args)]`** runs finder `f` over `e`, default the whole target, and records findings at evidence level `observed`. `e` must be unsliced. `anomalies (kinds = [...])` runs several finders with their default parameters. Unit finders (`outlier_heads`, `outlier_neurons`) need an architecture profile, and their scope must be the weight set or a layer role (`M.layers[...]`, optionally `.attn` for heads or `.mlp` for neurons).
 
 **`edit { op e (args) ... }`** applies edit operations to selections of the target, in order. An operand rooted in another binding is an error: use `compose`.
 
-**`compose { op e (args) ... }`** combines the working copy with another weight set: `e` is a weight set or an unsliced selection of one, never of the target. Names and shapes must match.
+**`compose { op e (args) ... }`** combines the working copy with another weight set: `e` is a weight set or a selection of one, never of the target, and may be a slice or a role such as `Donor.layers[0].attn.heads[1]`. Only the selected entries change. Names and shapes must match.
 
 **`repair (strategies = [...])`** is the one declarative mutation. The planner takes the findings about the target that describe the current working copy, and pairs each with the first listed strategy that handles its kind. Findings no strategy handles are reported as unrepaired. If there are findings and none can be handled, the run fails with "no applicable strategy". Findings made before a later edit are stale and are not used. The program must contain a `find` on the target before `repair`, and at least one listed strategy must handle a finder the program runs.
 
@@ -131,11 +159,15 @@ Unknown names are compile-time errors that list what is available.
 | `nan_inf` | | tensors containing NaN or infinities |
 | `zero_tensors` | | tensors that are entirely zero |
 | `dead_rows` | | all-zero rows of 2-D tensors |
-| `outlier_rows` | `threshold = 8.0` | rows whose L2 norm has a median/MAD robust z-score above the threshold. Tensors with fewer than 8 rows are skipped and reported as skipped. |
-| `outlier_tensors` | `threshold = 8.0` | tensors whose norm is a robust outlier among at least 3 same-shape tensors |
+| `outlier_rows` | `threshold = 8.0`, `min_ratio = 2.0` | rows whose L2 norm has a median/MAD robust z-score above the threshold and is at least `min_ratio` times the median row norm. Tensors with fewer than 8 rows are skipped and reported as skipped. |
+| `outlier_tensors` | `threshold = 8.0`, `min_ratio = 2.0` | tensors whose norm is an outlier, in the same sense, among at least 3 same-shape tensors |
+| `outlier_heads` | `threshold = 8.0`, `min_ratio = 2.0` | attention heads whose parameter norm is an outlier among comparable heads: those of the same layer when it has at least 8, otherwise all heads in scope. Needs a profile. |
+| `outlier_neurons` | `threshold = 8.0`, `min_ratio = 2.0` | MLP neurons whose parameter norm is an outlier among the neurons of their layer. Needs a profile. |
 | `duplicate_tensors` | | bit-identical non-constant tensors |
 | `low_effective_rank` | `threshold = 10%` | 2-D tensors whose entropy effective rank is below `threshold * min(shape)` |
-| `anomalies` | `kinds = [...]` | runs the listed finders |
+| `anomalies` | `kinds = [...]` | runs the listed finders; by default every finder that needs no profile |
+
+The `min_ratio` condition matters when few items are compared or they are nearly equal: the median absolute deviation is then tiny and z-scores alone flag ordinary variation. Groups of fewer than 8 heads or neurons are skipped and reported as skipped.
 
 **Edit operations** (operand: a selection of the target):
 
@@ -152,14 +184,15 @@ Unknown names are compile-time errors that list what is available.
 
 | Name | Parameters | Effect |
 |---|---|---|
-| `interpolate` | `alpha` in [0, 1] | `w = (1 - alpha) * w + alpha * donor`, computed in float64 |
-| `transplant` | | copy the donor's tensors |
+| `interpolate` | `alpha` in [0, 1] | `w = (1 - alpha) * w + alpha * donor` on the selected entries, computed in float64 |
+| `transplant` | | copy the donor's selected entries |
 
 **Repair strategies**:
 
 | Name | Handles | Effect |
 |---|---|---|
 | `rescale_outlier_rows` | `outlier_rows` | scale each flagged row to the tensor's median row norm. If `<prefix>.bias` has one entry per row, scale that entry by the same factor. |
+| `rescale_outlier_units` | `outlier_heads`, `outlier_neurons` | for each part of the unit (for a neuron: its gate row, up row and down column), if the part's norm is at least the finder's `min_ratio` times the median norm of the same part across the compared units, scale the part to that median. Other parts are left alone. |
 | `replace_nonfinite` | `nan_inf` | replace non-finite entries with 0 |
 
 **Requirements** (written `require <name>` in a contract):
@@ -169,7 +202,7 @@ Unknown names are compile-time errors that list what is available.
 | `finite` | | no parameter of the working copy is NaN or infinite |
 | `changed_params` | `max` | the fraction of changed parameters is at most `max` |
 
-**Metrics**: `accuracy`, the fraction of probe examples whose argmax over the suite's `output_slice` equals the label. Higher is better.
+**Metrics**: `accuracy`, the fraction of probe examples predicted correctly (section 4). Higher is better.
 
 ## 8. Effects and policies
 
@@ -235,7 +268,7 @@ In 0.1, `verify` raises a repaired finding to `experimentally_supported` only un
 
 1. **syntax**: E1xx.
 2. **names**: unknown or duplicate names, unknown registry entries (E2xx).
-3. **types**: argument types and ranges, statement rules, contract rules (E3xx). Structural checks against tensor manifests read from safetensors headers (E5xx): glob matches, slice bounds, 2-D requirements, compose compatibility, and probe-suite widths against `arch.json`.
+3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
 4. **effects**: policy rules (E40x) and effect permission (E410).
 
 When an input file does not exist yet, structural checks are deferred to run time and a warning (W201, W202) says so. `check` never imports a tensor library.
@@ -263,7 +296,7 @@ A program lowers to a linear list of operations over numbered values (`weightsmi
 | Op | Meaning | Effects |
 |---|---|---|
 | `Load` | load a model, weight set or behaviour | load |
-| `Select` | glob-select parameters, or slice a selection | none |
+| `Select` | select parameters by glob or by role (a canonical role path such as `layers[1].attn.heads[2]`, resolved against the profile at run time), or slice a selection | none |
 | `Inspect` | statistics | inspect |
 | `Find` | run a finder | inspect |
 | `Transform` | edit operation on the working copy | mutate |

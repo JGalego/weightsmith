@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from weightsmith.backends.pytorch.ops import region_mask
+from weightsmith.compiler.ir import Region
 from weightsmith.evidence import Evidence, EvidenceLevel, FinderResult, Finding, Location
 
 Tensors = dict[str, torch.Tensor]
@@ -14,6 +16,7 @@ FinderFn = Callable[[Tensors, list[str], dict[str, Any], str, str], FinderResult
 
 MIN_ROWS = 8  # robust row statistics need at least this many rows
 MIN_SIBLINGS = 3
+MIN_UNITS = 8  # robust statistics over heads or neurons need at least this many units
 
 _STRUCTURAL = (
     "This is a statistical observation about the weights. It does not establish that the "
@@ -116,7 +119,10 @@ def dead_rows(
                         rows=rows,
                         row_count=t.shape[0],
                     ),
-                    (_STRUCTURAL,),
+                    (
+                        _STRUCTURAL,
+                        "Embedding rows of padding or unused tokens are often exactly zero.",
+                    ),
                 )
             )
     return FinderResult("dead_rows", tuple(findings), examined, tuple(skipped))
@@ -141,7 +147,8 @@ def outlier_rows(
         examined += 1
         norms = t.double().norm(dim=1)
         z, median, mad = _robust_z(norms)
-        rows = (z > threshold).nonzero().flatten().tolist()
+        min_ratio = float(params.get("min_ratio", 2.0))
+        rows = ((z > threshold) & (norms >= min_ratio * median)).nonzero().flatten().tolist()
         if rows:
             findings.append(
                 Finding(
@@ -160,6 +167,7 @@ def outlier_rows(
                         median_norm=round(median, 6),
                         mad=round(mad, 6),
                         threshold=threshold,
+                        min_ratio=min_ratio,
                     ),
                     (_STRUCTURAL,),
                 )
@@ -184,8 +192,9 @@ def outlier_tensors(
         examined += len(members)
         norms = torch.stack([tensors[m].double().norm() for m in members])
         z, median, _ = _robust_z(norms)
+        min_ratio = float(params.get("min_ratio", 2.0))
         for i, member in enumerate(members):
-            if z[i] > threshold:
+            if z[i] > threshold and norms[i] >= min_ratio * median:
                 findings.append(
                     Finding(
                         "outlier_tensors",
@@ -201,6 +210,7 @@ def outlier_tensors(
                             median_norm=median,
                             z_score=round(z[i].item(), 2),
                             threshold=threshold,
+                            min_ratio=min_ratio,
                         ),
                         (_STRUCTURAL,),
                     )
@@ -288,6 +298,93 @@ def low_effective_rank(
             )
     return FinderResult("low_effective_rank", tuple(findings), examined, tuple(skipped))
 
+
+Unit = tuple[str, tuple[Region, ...]]  # (role path, regions)
+UnitFinderFn = Callable[[Tensors, list[list[Unit]], dict[str, Any], str, str], FinderResult]
+
+
+def _outlier_units(kind: str, noun: str) -> UnitFinderFn:
+    def finder(
+        tensors: Tensors,
+        groups: list[list[Unit]],
+        params: dict[str, Any],
+        binding: str,
+        model_id: str,
+    ) -> FinderResult:
+        threshold = float(params.get("threshold", 8.0))
+        min_ratio = float(params.get("min_ratio", 2.0))
+        findings: list[Finding] = []
+        skipped: list[tuple[str, str]] = []
+        examined = 0
+        for group in groups:
+            label = f"{group[0][0]} .. {group[-1][0]}" if group else "(empty)"
+            if len(group) < MIN_UNITS:
+                skipped.append(
+                    (label, f"{len(group)} {noun}s; robust statistics need at least {MIN_UNITS}")
+                )
+                continue
+            part_norms = []
+            finite = True
+            for _, regions in group:
+                norms = []
+                for region in regions:
+                    t = tensors[region.tensor]
+                    values = t[region_mask(t, region.index)].double()
+                    finite = finite and bool(torch.isfinite(values).all())
+                    norms.append(values.norm())
+                part_norms.append(torch.stack(norms))
+            if not finite:
+                skipped.append((label, "contains non-finite values"))
+                continue
+            examined += len(group)
+            parts = torch.stack(part_norms)  # (units, parts)
+            unit_norms = parts.norm(dim=1)
+            z, median, mad = _robust_z(unit_norms)
+            part_medians = parts.median(dim=0).values
+            outliers = (z > threshold) & (unit_norms >= min_ratio * median)
+            for i in outliers.nonzero().flatten().tolist():
+                name, regions = group[i]
+                findings.append(
+                    Finding(
+                        kind,
+                        binding,
+                        model_id,
+                        f"{name} has an outlying parameter norm "
+                        f"({unit_norms[i].item() / median:.1f}x the median of {len(group)} "
+                        f"{noun}s)",
+                        (Location(regions[0].tensor, unit=name, regions=regions),),
+                        _observed(
+                            f"{noun}_norm_robust_z",
+                            f"The L2 norm of each {noun}'s parameters, compared with the other "
+                            f"{noun}s in its group using a MAD-based z-score.",
+                            norm=round(unit_norms[i].item(), 6),
+                            median_norm=round(median, 6),
+                            mad=round(mad, 6),
+                            z_score=round(z[i].item(), 2),
+                            threshold=threshold,
+                            min_ratio=min_ratio,
+                            group_size=len(group),
+                            parts=[
+                                {
+                                    "region": str(r),
+                                    "norm": round(parts[i, j].item(), 6),
+                                    "median_norm": round(part_medians[j].item(), 6),
+                                }
+                                for j, r in enumerate(regions)
+                            ],
+                        ),
+                        (_STRUCTURAL,),
+                    )
+                )
+        return FinderResult(kind, tuple(findings), examined, tuple(skipped), noun)
+
+    return finder
+
+
+UNIT_FINDERS: dict[str, UnitFinderFn] = {
+    "outlier_heads": _outlier_units("outlier_heads", "head"),
+    "outlier_neurons": _outlier_units("outlier_neurons", "neuron"),
+}
 
 FINDERS: dict[str, FinderFn] = {
     "nan_inf": nan_inf,

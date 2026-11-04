@@ -109,7 +109,7 @@ def test_directory_without_arch_is_not_a_model(compile_text: Compile) -> None:
     result = compile_text(
         'model M = load("fixtures/tiny_transformer")\nprogram P { target M inspect }'
     )
-    assert "E306" in codes(result)
+    assert "E304" in codes(result)
 
 
 def test_interpolation_needs_matching_manifests(compile_text: Compile) -> None:
