@@ -1,0 +1,31 @@
+// Find a planted defect in a small classifier, repair it without gradient descent,
+// and verify that the repair improves the damaged behaviour without harming the other one.
+
+model Base = load("fixtures/tiny_mlp_defective")
+behavior parity   = probes("fixtures/tiny_mlp/parity.json",   metric = accuracy)
+behavior majority = probes("fixtures/tiny_mlp/majority.json", metric = accuracy)
+
+program RepairMLP {
+    target Base
+
+    policy {
+        allow probe(max_forward_passes = 2000)
+        allow mutate(max_changed_params = 10%)
+        allow save
+        forbid train
+        forbid reason
+    }
+
+    contract {
+        improve  parity   (min_delta = 0.25)
+        preserve majority (tolerance = 0.02)
+        require  finite
+        require  changed_params (max = 5%)
+    }
+
+    find anomalies (kinds = [outlier_rows, nan_inf])
+    repair (strategies = [rescale_outlier_rows, replace_nonfinite])
+    verify
+
+    output { model, patch, findings, evidence, evaluation }
+}

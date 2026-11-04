@@ -1,0 +1,189 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Weightsmith",
+  "scopeName": "source.weightsmith",
+  "fileTypes": [
+    "wsm"
+  ],
+  "patterns": [
+    {
+      "include": "#comment"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#declaration"
+    },
+    {
+      "include": "#keyword"
+    },
+    {
+      "include": "#number"
+    },
+    {
+      "include": "#operator"
+    },
+    {
+      "include": "#property"
+    },
+    {
+      "include": "#argument"
+    },
+    {
+      "include": "#builtin"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.weightsmith",
+      "match": "//.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.weightsmith",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        {
+          "name": "constant.character.escape.weightsmith",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "declaration": {
+      "patterns": [
+        {
+          "match": "\\b(program)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.weightsmith"
+            },
+            "2": {
+              "name": "entity.name.type.class.weightsmith"
+            }
+          }
+        },
+        {
+          "match": "\\b(model|weights|behavior|selection|let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "storage.type.weightsmith"
+            },
+            "2": {
+              "name": "variable.other.definition.weightsmith"
+            }
+          }
+        },
+        {
+          "match": "\\b(target)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.control.weightsmith"
+            },
+            "2": {
+              "name": "variable.other.weightsmith"
+            }
+          }
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "storage.type.weightsmith",
+          "match": "\\b(?:model|weights|behavior|selection|program|let)\\b"
+        },
+        {
+          "name": "keyword.control.weightsmith",
+          "match": "\\b(?:policy|target|inspect|find|in|edit|compose|repair|contract|verify|output)\\b"
+        },
+        {
+          "name": "keyword.other.rule.weightsmith",
+          "match": "\\b(?:allow|forbid|preserve|improve|require)\\b"
+        },
+        {
+          "name": "constant.language.boolean.weightsmith",
+          "match": "\\b(?:true|false)\\b"
+        }
+      ]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.percentage.weightsmith",
+          "match": "\\b\\d+(?:\\.\\d+)?%"
+        },
+        {
+          "name": "constant.numeric.float.weightsmith",
+          "match": "\\b(?:\\d+\\.\\d+(?:[eE][+-]?\\d+)?|\\d+[eE][+-]?\\d+)\\b"
+        },
+        {
+          "name": "constant.numeric.integer.weightsmith",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.range.weightsmith",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.assignment.weightsmith",
+          "match": "="
+        }
+      ]
+    },
+    "property": {
+      "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.accessor.weightsmith"
+        },
+        "2": {
+          "name": "variable.other.property.weightsmith"
+        }
+      }
+    },
+    "argument": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?==)",
+      "captures": {
+        "1": {
+          "name": "variable.parameter.weightsmith"
+        }
+      }
+    },
+    "builtin": {
+      "name": "support.function.builtin.weightsmith",
+      "match": "\\b(?:accuracy|anomalies|changed_params|dead_rows|duplicate_tensors|evaluation|evidence|fill|findings|finite|interpolate|load|low_effective_rank|low_rank|mutate|nan_inf|outlier_rows|outlier_tensors|patch|probe|probes|prune_magnitude|reason|replace_nonfinite|rescale_outlier_rows|save|scale|summary|train|transplant|zero|zero_tensors)\\b"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.comma.weightsmith",
+          "match": ","
+        },
+        {
+          "name": "punctuation.separator.colon.weightsmith",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.section.block.weightsmith",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.parens.weightsmith",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.weightsmith",
+          "match": "[\\[\\]]"
+        }
+      ]
+    }
+  }
+}

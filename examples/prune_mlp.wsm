@@ -1,0 +1,33 @@
+// Imperative editing: name the parameters and the operations explicitly.
+// Prune the smallest-magnitude weights of the hidden layer, zero one hidden unit's incoming
+// weights, and check what that costs.
+
+model Base = load("fixtures/tiny_mlp")
+behavior parity   = probes("fixtures/tiny_mlp/parity.json",   metric = accuracy)
+behavior majority = probes("fixtures/tiny_mlp/majority.json", metric = accuracy)
+
+program PruneMLP {
+    target Base
+
+    policy {
+        allow probe(max_forward_passes = 2000)
+        allow mutate(max_changed_params = 25%)
+        allow save
+    }
+
+    contract {
+        preserve parity   (tolerance = 0.02)
+        preserve majority (tolerance = 0.02)
+        require  changed_params (max = 25%)
+    }
+
+    let hidden = Base.params["layers.1.weight"]
+
+    edit {
+        prune_magnitude hidden (fraction = 20%)
+        zero hidden[63, :]
+    }
+    verify
+
+    output { model, patch, evaluation }
+}

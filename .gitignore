@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+# Generated synthetic fixtures and run outputs
+examples/fixtures/
+out/
+editors/vscode/*.vsix

@@ -1,0 +1,20 @@
+// Inspect raw weights without an architecture. 'weights' loads tensors only, so this program
+// can read and search parameters but can never run the network; the checker rejects any
+// behavioural check against W.
+//
+// The fixture is a 2-layer Transformer encoder with three planted defects: a NaN, a duplicated
+// tensor and an all-zero row. Nothing here assumes a Transformer: finders see named tensors.
+
+weights W = load("fixtures/tiny_transformer/model.safetensors")
+
+program InspectTransformer {
+    target W
+
+    inspect
+    inspect W.params["encoder.layers.0.linear1.*"]
+
+    find anomalies (kinds = [nan_inf, zero_tensors, dead_rows, duplicate_tensors,
+                             outlier_rows, low_effective_rank])
+
+    output { summary, findings, evidence }
+}

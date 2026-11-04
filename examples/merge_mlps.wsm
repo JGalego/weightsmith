@@ -1,0 +1,32 @@
+// Merge a model with a fine-tuned variant of itself, then bring one layer over wholesale.
+// Both models share an initialisation, so they sit in the same loss basin and interpolating
+// their weights should keep both behaviours. The contract checks that it does.
+
+model Base  = load("fixtures/tiny_mlp")
+model Donor = load("fixtures/tiny_mlp_donor")
+behavior parity   = probes("fixtures/tiny_mlp/parity.json",   metric = accuracy)
+behavior majority = probes("fixtures/tiny_mlp/majority.json", metric = accuracy)
+
+program MergeMLPs {
+    target Base
+
+    policy {
+        allow probe(max_forward_passes = 2000)
+        allow mutate
+        allow save
+    }
+
+    contract {
+        preserve parity   (tolerance = 0.05)
+        preserve majority (tolerance = 0.05)
+        require  finite
+    }
+
+    compose {
+        interpolate Donor (alpha = 0.5)
+        transplant  Donor.params["layers.1.*"]
+    }
+    verify
+
+    output { model, patch, evaluation }
+}

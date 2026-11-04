@@ -1,0 +1,30 @@
+// The same merge as merge_mlps.wsm, but with a model trained independently from another seed.
+// Weight-space interpolation between unrelated networks usually destroys what both learned,
+// because their hidden units are not aligned. Verification should catch this and fail;
+// 'weightsmith run' then exits with status 3 and no artifact claims success.
+
+model Base      = load("fixtures/tiny_mlp")
+model Unrelated = load("fixtures/tiny_mlp_unrelated")
+behavior parity   = probes("fixtures/tiny_mlp/parity.json",   metric = accuracy)
+behavior majority = probes("fixtures/tiny_mlp/majority.json", metric = accuracy)
+
+program MergeUnrelated {
+    target Base
+
+    policy {
+        allow probe(max_forward_passes = 2000)
+        allow mutate
+    }
+
+    contract {
+        preserve parity   (tolerance = 0.05)
+        preserve majority (tolerance = 0.05)
+    }
+
+    compose {
+        interpolate Unrelated (alpha = 0.5)
+    }
+    verify
+
+    output { evaluation }
+}

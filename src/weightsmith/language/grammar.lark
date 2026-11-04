@@ -1,0 +1,85 @@
+// Weightsmith grammar (language version 0.1). See docs/semantics.md for the semantics.
+// Whitespace, including newlines, is insignificant. Every statement starts with a keyword,
+// so no separators are needed.
+
+start: decl*
+
+?decl: load_decl
+     | behavior_decl
+     | selection_decl
+     | policy_block
+     | program
+
+load_decl: (MODEL | WEIGHTS) NAME "=" "load" "(" STRING ")"
+behavior_decl: "behavior" NAME "=" "probes" "(" STRING ("," kwarg)* ")"
+selection_decl: "selection" NAME "=" expr
+
+policy_block: "policy" "{" policy_rule* "}"
+policy_rule: (ALLOW | FORBID) NAME kwargs?
+
+program: "program" NAME "{" "target" NAME stmt* "}"
+
+?stmt: let_stmt
+     | inspect_stmt
+     | find_stmt
+     | edit_block
+     | compose_block
+     | repair_stmt
+     | contract_block
+     | verify_stmt
+     | output_block
+     | policy_block
+
+let_stmt: "let" NAME "=" expr
+inspect_stmt: "inspect" expr?
+find_stmt: "find" NAME ("in" expr)? kwargs?
+edit_block: "edit" "{" op_stmt* "}"
+compose_block: "compose" "{" op_stmt* "}"
+op_stmt: NAME expr kwargs?
+repair_stmt: "repair" kwargs?
+contract_block: "contract" "{" contract_item* "}"
+contract_item: (PRESERVE | IMPROVE | REQUIRE) NAME kwargs?
+verify_stmt: "verify"
+output_block: "output" "{" (output_item ("," output_item)*)? "}"
+output_item: NAME | MODEL | WEIGHTS
+
+kwargs: "(" (kwarg ("," kwarg)*)? ")"
+kwarg: NAME "=" expr
+
+?expr: postfix
+
+?postfix: atom
+        | postfix "." NAME                       -> attr
+        | postfix "[" index ("," index)* "]"     -> subscript
+
+?atom: NAME                                      -> name
+     | INT                                       -> int_lit
+     | FLOAT                                     -> float_lit
+     | PERCENT                                   -> percent_lit
+     | STRING                                    -> str_lit
+     | BOOL                                      -> bool_lit
+     | "[" (expr ("," expr)*)? "]"               -> list_lit
+
+?index: INT                                      -> int_lit
+      | STRING                                   -> str_lit
+      | INT ".." INT                             -> range_index
+      | ":"                                      -> full_index
+
+BOOL.2: /(true|false)(?![A-Za-z0-9_])/
+MODEL: "model"
+WEIGHTS: "weights"
+ALLOW: "allow"
+FORBID: "forbid"
+PRESERVE: "preserve"
+IMPROVE: "improve"
+REQUIRE: "require"
+PERCENT.3: /\d+(\.\d+)?%/
+FLOAT.2: /\d+\.\d+([eE][+-]?\d+)?/ | /\d+[eE][+-]?\d+/
+INT: /\d+/
+NAME: /[A-Za-z_][A-Za-z0-9_]*/
+STRING: /"([^"\\\n]|\\.)*"/
+
+COMMENT: /\/\/[^\n]*/
+%import common.WS
+%ignore WS
+%ignore COMMENT

@@ -1,0 +1,41 @@
+{
+  "name": "weightsmith",
+  "displayName": "Weightsmith",
+  "description": "Syntax highlighting for Weightsmith (.wsm) programs.",
+  "version": "0.1.0",
+  "publisher": "jgalego",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JGalego/weightsmith",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "weightsmith",
+        "aliases": [
+          "Weightsmith",
+          "wsm"
+        ],
+        "extensions": [
+          ".wsm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "weightsmith",
+        "scopeName": "source.weightsmith",
+        "path": "./syntaxes/weightsmith.tmLanguage.json"
+      }
+    ]
+  }
+}
