@@ -57,6 +57,8 @@ def live_transport() -> Transport:
                 ) from exc
             except anthropic.APIConnectionError as exc:
                 raise ProviderError(f"cannot reach the Anthropic API: {exc}") from exc
+            except anthropic.APIError as exc:  # e.g. an error event in the middle of a stream
+                raise ProviderError(f"Anthropic API error: {exc.message}") from exc
         raise AssertionError("unreachable")
 
     return send

@@ -217,6 +217,36 @@ def test_responses_conversation_sends_back_everything_the_model_produced() -> No
     assert sent[1]["input"][1]["encrypted_content"] == "SECRET"
 
 
+def test_an_error_in_the_middle_of_a_stream_is_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx2
+    import openai
+
+    from weightsmith.reasoning.openai import live_transport
+    from weightsmith.reasoning.provider import ProviderError
+
+    class Stream:
+        def __enter__(self) -> Stream:
+            request = httpx2.Request("POST", "https://api.openai.com/v1/responses")
+            raise openai.APIError("You have no credits remaining.", request, body=None)
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            self.responses = self
+
+        def stream(self, **body: object) -> Stream:
+            return Stream()
+
+    monkeypatch.setattr(openai, "OpenAI", Client)
+    send = live_transport({"model": "m"})
+    with pytest.raises(ProviderError, match="no credits remaining"):
+        send({"model": "m", "input": []})
+
+
 def test_responses_stops() -> None:
     refused = {"output": [{"type": "message", "content": [{"type": "refusal", "refusal": "no"}]}]}
     assert parse_responses(refused).stop == "refusal"

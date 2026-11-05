@@ -70,6 +70,8 @@ def live_transport(settings: dict[str, Any]) -> Transport:
             raise ProviderError(f"OpenAI API error {exc.status_code}: {exc.message}") from exc
         except openai.APIConnectionError as exc:
             raise ProviderError(f"cannot reach the OpenAI API: {exc}") from exc
+        except openai.APIError as exc:  # e.g. an error event in the middle of a stream
+            raise ProviderError(f"OpenAI API error: {exc.message}") from exc
 
     return send
 
