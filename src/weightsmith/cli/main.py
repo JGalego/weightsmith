@@ -95,6 +95,34 @@ def compile_(
         console.print(f"Wrote {escape(str(output))}")
 
 
+def _load_env(path: Path | None) -> None:
+    """Set variables from a ``KEY=VALUE`` file, without overriding the environment.
+
+    Credentials stay out of programs: providers read them from the environment, and this lets them
+    live in a local file instead of the shell.
+    """
+    import os
+
+    if path is None:
+        path = Path(".env")
+        if not path.is_file():
+            return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        err.print(f"[red]error[/]: cannot read {escape(str(path))}: {exc}")
+        raise typer.Exit(1) from exc
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.removeprefix("export ").split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key.strip(), value)
+
+
 @app.command()
 def run(
     program: Annotated[Path, typer.Argument(help="A .wsm source file or compiled IR (.json).")],
@@ -119,9 +147,17 @@ def run(
         ),
     ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
+    env_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--env-file",
+            help="Read provider credentials from this file (default: ./.env if it exists).",
+        ),
+    ] = None,
 ) -> None:
     """Run a program. Exit codes: 0 ok, 1 invalid program, 2 runtime error or budget stop,
     3 a contract item failed, 4 a contract item was inconclusive."""
+    _load_env(env_file)
     if program.suffix == ".json":
         try:
             ir = IRProgram.from_json(program.read_text(encoding="utf-8"))

@@ -86,6 +86,12 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | [repair_with_claude.wsm](examples/repair_with_claude.wsm) | The same task given to Claude, with only "one task is broken" as a hint. Calls the Anthropic API and costs money | Whatever Claude achieves, verified the same way |
 | [head_surgery.wsm](examples/head_surgery.wsm) | Editing by role: zero one attention head, transplant a key/value head from a fine-tuned donor | All three behaviours preserved; 3.1% of parameters changed |
 
+[examples/wsp/](examples/wsp) replicates experiments from [Sparks of weight-space programming](https://rikiyat.github.io/blog/weight-space-programming/) with the article's own networks, prompts and editor, GPT-6 Astra. `uv run python examples/wsp/fetch.py` downloads them from the article's [published logs](https://github.com/RikiyaT/lm_understand-logs) (CC BY 4.0) and checks that Weightsmith rebuilds every prompt byte for byte.
+
+| Example | Shows | Article's result |
+|---|---|---|
+| [wsp/which_game.wsm](examples/wsp/which_game.wsm) | `message_file` with `{{weights}}`, a weight view in `decimals(3)`, a one-reply editor (`protocol = "blocks"`, `tools = []`) and `require answer` with the key kept in the program. Calls the OpenAI API | The right game for 4 of 4 networks |
+
 ## Language at a glance
 
 | Construct | Example |
@@ -102,6 +108,7 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | Repair | `repair (strategies = [rescale_outlier_rows])` |
 | Declare an editor | `editor Claude = provider("anthropic", model = "claude-opus-5-5")` |
 | Delegate to it | `delegate Claude (task = "...", tools = [describe, run_probes, edit, python], practice = [b_train])` |
+| Ask it a question | `delegate E (message_file = "prompt.txt", tools = [], protocol = "blocks")` then `require answer (editor = E, field = "Game", matches = "(?i)breakout")` |
 | Contract and verify | `contract { improve b (min_delta = 0.1)  preserve c (tolerance = 0.02) }` then `verify` |
 | Policy | `policy { allow probe(max_forward_passes = 500)  allow mutate(max_changed_params = 5%)  allow reason(max_calls = 20) }` |
 | Output | `output { model, patch, findings, evidence, evaluation, summary }` |
@@ -142,7 +149,7 @@ source (.wsm)
 |---|---|
 | `weightsmith check FILE` | Syntax, names, types and effects; never imports PyTorch |
 | `weightsmith compile FILE [-o out.json] [--text]` | Emit IR as JSON or readable text |
-| `weightsmith run FILE [--out DIR] [--dry-run] [--replay DIR] [--json]` | Run a `.wsm` program or compiled IR; `--replay` answers editors from recorded transcripts |
+| `weightsmith run FILE [--out DIR] [--dry-run] [--replay DIR] [--env-file F] [--json]` | Run a `.wsm` program or compiled IR; `--replay` answers editors from recorded transcripts; provider credentials may come from `./.env` |
 | `weightsmith inspect PATH` | Statistics, architecture profile and structural findings for a weight file or model directory |
 | `weightsmith diff A B [--out DIR]` | Compare two weight sets; optionally save a patch |
 | `weightsmith apply BASE PATCH --out DIR [--reverse]` | Apply or revert a patch, checking hashes |

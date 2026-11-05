@@ -37,7 +37,7 @@ from weightsmith.models.hf import SIDE_FILES, HFArch, read_profile
 from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE, weights_size
 from weightsmith.models.profiles import RoleError, parse_role
 from weightsmith.reasoning.provider import ToolResult
-from weightsmith.registry import FINDERS, METRICS
+from weightsmith.registry import BLOCK_TOOLS, FINDERS, METRICS
 from weightsmith.runtime import planner
 from weightsmith.runtime.context import (
     Budgets,
@@ -468,12 +468,13 @@ class Executor:
     # delegation ----------------------------------------------------------------------------------
     def _delegate(self, op: ir.Delegate) -> None:
         from weightsmith.reasoning import live_transport, open_conversation
+        from weightsmith.reasoning.blocks import last_block
         from weightsmith.reasoning.provider import (
             RecordingTransport,
             ReplayTransport,
             Transcript,
         )
-        from weightsmith.runtime.editor import SYSTEM_PROMPT, EditorSession
+        from weightsmith.runtime.editor import EditorSession
 
         if self.options.dry_run or self.out_dir is None:
             self._event(op, "dry-run", "dry run: the editor was not called")
@@ -491,21 +492,22 @@ class Executor:
         transport = RecordingTransport(inner, transcript, path)
         session = EditorSession(self, op, self.out_dir / "sandbox" / name.removesuffix(".json"))
         conversation = open_conversation(
-            op.provider, op.settings, SYSTEM_PROMPT, session.schemas(), transport
+            op.provider, op.settings, session.system_prompt(), session.schemas(), transport
         )
         max_steps = int(op.params.get("max_steps", 20))
         steps, stop, final = 0, "max_steps", ""
         input_tokens = output_tokens = 0
         results: tuple[Any, ...] = ()
-        first = True
+        message: str | None = session.first_message()
+        block_kinds = set(op.tools) & BLOCK_TOOLS
         while steps < max_steps:
             try:
                 self.budgets.reserve_editor_call(op.span)
             except BudgetExceeded as exc:
                 stop = f"budget: {exc.message}"
                 break
-            turn = conversation.send(session.briefing() if first else None, results)
-            first = False
+            turn = conversation.send(message, results)
+            message, results = None, ()
             steps += 1
             input_tokens += turn.input_tokens
             output_tokens += turn.output_tokens
@@ -515,6 +517,19 @@ class Executor:
             if turn.stop == "refusal":
                 stop = f"refusal ({turn.detail})" if turn.detail else "refusal"
                 break
+            if session.blocks:
+                block = last_block(turn.text, block_kinds)
+                if block is None:
+                    stop = "finished"
+                    break
+                if not within:
+                    stop = "budget: reason max_tokens exceeded"
+                    break
+                try:
+                    message = session.run_block(block)
+                except WeightsmithError as exc:
+                    message = f"ERROR: {exc.message}"
+                continue
             if not turn.calls:
                 stop = "finished"
                 break
@@ -647,6 +662,11 @@ class Executor:
         if item.subject == "changed_params":
             changed = sum(self.working.changed().values())
             return v.judge_changed_params(changed, self.working.total, float(item.params["max"]))
+        if item.subject == "answer":
+            editor = str(item.params["editor"])
+            asked = [d for d in self.report.delegations if d["editor"] == editor]
+            text = asked[-1]["final_message"] if asked else None
+            return v.judge_answer(editor, text, str(item.params["field"]), item.params["matches"])
         raise WeightsmithError(f"unknown requirement '{item.subject}'", item.span)
 
     def _attach_intervention_evidence(self, verdicts: list[v.Verdict]) -> None:

@@ -13,6 +13,7 @@ behaviour in general.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -155,6 +156,64 @@ def judge_changed_params(changed: int, total: int, maximum: float) -> Verdict:
         Status.FAILED,
         f"{fraction:.4%} of parameters changed, more than {maximum:.4%}",
         measurements,
+    )
+
+
+def answer_field(text: str, field_name: str) -> str | None:
+    """The value of the last ``Field: value`` line in an answer, or ``None``.
+
+    Markdown around the field name is ignored (``## Game``, ``**Game:**``). When the line holds
+    only the field name, as a heading does, the value is the next non-empty line.
+    """
+    pattern = re.compile(rf"^{re.escape(field_name)}\s*:?\s*(.*)$", re.IGNORECASE)
+    lines = [_plain(line) for line in text.splitlines()]
+    value = None
+    for i, line in enumerate(lines):
+        match = pattern.match(line)
+        if match is None:
+            continue
+        found = match.group(1).strip()
+        if not found:
+            found = next((rest for rest in lines[i + 1 :] if rest), "")
+        value = found or None
+    return value
+
+
+def _plain(line: str) -> str:
+    return re.sub(r"^[#>\s*_-]+", "", line).replace("**", "").replace("__", "").strip()
+
+
+def judge_answer(editor: str, text: str | None, field_name: str, matches: str) -> Verdict:
+    subject = "answer"
+    if text is None:
+        return Verdict(
+            "require",
+            subject,
+            Status.INCONCLUSIVE,
+            f"'{editor}' was not asked in this run",
+            {"editor": editor},
+        )
+    value = answer_field(text, field_name)
+    measurements: dict[str, Any] = {
+        "editor": editor,
+        "field": field_name,
+        "answer": value,
+        "matches": matches,
+    }
+    if value is None:
+        return Verdict(
+            "require",
+            subject,
+            Status.INCONCLUSIVE,
+            f"'{editor}' gave no '{field_name}' line",
+            measurements,
+        )
+    if re.search(matches, value):
+        return Verdict(
+            "require", subject, Status.VERIFIED, f"{field_name}: {value!r} matches", measurements
+        )
+    return Verdict(
+        "require", subject, Status.FAILED, f"{field_name}: {value!r} does not match", measurements
     )
 
 

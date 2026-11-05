@@ -17,6 +17,7 @@ from weightsmith.compiler.types import (
     INT,
     STRING,
     BehaviorType,
+    EditorType,
     ListType,
     SymbolType,
     Type,
@@ -33,6 +34,7 @@ class ParamSpec:
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple[str, ...] | None = None  # for String parameters with a fixed set of values
+    allow_empty: bool = False  # for list parameters: whether [] is a valid value
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +274,16 @@ REQUIREMENTS: dict[str, RequirementSpec] = {
     for r in [
         RequirementSpec("finite", "No parameter of the working model is NaN or infinite."),
         RequirementSpec(
+            "answer",
+            "The editor's last reply has a 'field' line whose value matches the regular "
+            "expression 'matches'. The pattern stays in the program; the editor never sees it.",
+            (
+                _p("editor", EditorType(), "The editor that was asked.", required=True),
+                _p("field", STRING, "The field name, as in 'Game: ...'.", required=True),
+                _p("matches", STRING, "A regular expression the answer must match.", required=True),
+            ),
+        ),
+        RequirementSpec(
             "changed_params",
             "The fraction of parameters that differ from the original is at most 'max'.",
             (
@@ -349,18 +361,25 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ),
         ProviderSpec(
             "openai",
-            "Models behind the OpenAI Chat Completions API, including local servers that speak "
-            "it (base_url). Credentials come from the environment (OPENAI_API_KEY).",
+            "OpenAI models through the Responses API, or any server that speaks Chat Completions, "
+            "including local ones (base_url). Credentials come from the environment "
+            "(OPENAI_API_KEY).",
             (
                 _p("model", STRING, "Model ID.", required=True),
                 _p("base_url", STRING, "API endpoint, for example a local server."),
-                _p("max_tokens", INT, "Output token limit per call.", default=16000, minimum=1),
                 _p(
-                    "reasoning_effort",
+                    "api",
+                    STRING,
+                    "Which API to call (default: responses, or chat when base_url is set).",
+                    choices=("responses", "chat"),
+                ),
+                _p(
+                    "effort",
                     STRING,
                     "Reasoning effort, for models that support it.",
-                    choices=("minimal", "low", "medium", "high"),
+                    choices=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
                 ),
+                _p("max_tokens", INT, "Output token limit per call.", default=64000, minimum=1),
             ),
             extra="openai",
         ),
@@ -441,15 +460,34 @@ TOOLS: dict[str, ToolSpec] = {
     ]
 }
 
+# Tools an editor can use under protocol = "blocks", by writing a fenced block of that name.
+BLOCK_TOOLS: frozenset[str] = frozenset()
+
 DELEGATE_PARAMS: tuple[ParamSpec, ...] = (
     _p("task", STRING, "What the editor should do."),
     _p("task_file", STRING, "A text file with the task, relative to the program."),
     _p(
+        "message_file",
+        STRING,
+        "A text file that is sent, as it is, as the first message instead of Weightsmith's "
+        "briefing. It may contain {{weights}}, which is replaced by every weight as text.",
+    ),
+    _p(
         "tools",
         ListType(SymbolType("tool")),
-        "Tools the editor may call.",
+        "Tools the editor may call; [] for none.",
         default=("describe", "read_weights", "stats"),
+        allow_empty=True,
     ),
+    _p(
+        "protocol",
+        STRING,
+        "How the editor acts: by calling tools, or by writing fenced blocks in its replies.",
+        default="tools",
+        choices=("tools", "blocks"),
+    ),
+    _p("system", STRING, "System instructions that replace Weightsmith's own."),
+    _p("system_file", STRING, "A text file with the system instructions."),
     _p(
         "practice",
         ListType(BehaviorType()),
@@ -463,6 +501,12 @@ DELEGATE_PARAMS: tuple[ParamSpec, ...] = (
         BOOL,
         "Put every weight, as text, in the first message (for small networks).",
         default=False,
+    ),
+    _p(
+        "weights_format",
+        STRING,
+        "How weights are written as text: decimals(n), or int_scale(n) for integers times one "
+        "scale per tensor with n significant digits.",
     ),
 )
 
@@ -497,6 +541,7 @@ OUTPUTS: dict[str, str] = {
 
 __all__ = [
     "BEHAVIOR_PARAMS",
+    "BLOCK_TOOLS",
     "BOOL",
     "CLAUSES",
     "COMPOSE_OPS",

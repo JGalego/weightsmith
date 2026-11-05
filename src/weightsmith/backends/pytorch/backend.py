@@ -248,6 +248,9 @@ class PyTorchBackend:
             for i, o in zip(inputs, outputs.tolist(), strict=True)
         ]
 
+    def arrays(self, tensors: Tensors, names: list[str]) -> dict[str, Any]:
+        return {name: tensors[name].detach().double().cpu().numpy() for name in names}
+
     def region_values(self, tensors: Tensors, regions: list[Region]) -> list[dict[str, Any]]:
         """The values of each region, as rows labelled with their index in the tensor."""
         blocks = []

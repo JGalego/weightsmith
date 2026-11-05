@@ -159,7 +159,7 @@
     },
     "builtin": {
       "name": "support.function.builtin.weightsmith",
-      "match": "\\b(?:accuracy|anomalies|anthropic|changed_params|dead_rows|describe|duplicate_tensors|evaluation|evidence|execute|fill|findings|finite|forward|interpolate|load|low_effective_rank|low_rank|mutate|nan_inf|openai|outlier_heads|outlier_neurons|outlier_rows|outlier_tensors|patch|probe|probes|provider|prune_magnitude|python|read_weights|reason|replace_nonfinite|rescale_outlier_rows|rescale_outlier_units|run_probes|save|scale|scripted|set_weights|stats|summary|train|transplant|undo|zero|zero_tensors)\\b"
+      "match": "\\b(?:accuracy|anomalies|answer|anthropic|changed_params|dead_rows|describe|duplicate_tensors|evaluation|evidence|execute|fill|findings|finite|forward|interpolate|load|low_effective_rank|low_rank|mutate|nan_inf|openai|outlier_heads|outlier_neurons|outlier_rows|outlier_tensors|patch|probe|probes|provider|prune_magnitude|python|read_weights|reason|replace_nonfinite|rescale_outlier_rows|rescale_outlier_units|run_probes|save|scale|scripted|set_weights|stats|summary|train|transplant|undo|zero|zero_tensors)\\b"
     },
     "punctuation": {
       "patterns": [

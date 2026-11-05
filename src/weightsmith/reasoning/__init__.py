@@ -34,7 +34,7 @@ def live_transport(provider: str, settings: dict[str, Any]) -> Transport:
     if provider == "openai":
         from weightsmith.reasoning import openai
 
-        return openai.live_transport(settings.get("base_url"))
+        return openai.live_transport(settings)
     if provider == "scripted":
         from weightsmith.reasoning import scripted
 
@@ -54,9 +54,9 @@ def open_conversation(
 
         return AnthropicConversation(settings, system, tools, transport)
     if provider == "openai":
-        from weightsmith.reasoning.openai import OpenAIConversation
+        from weightsmith.reasoning.openai import open_openai
 
-        return OpenAIConversation(settings, system, tools, transport)
+        return open_openai(settings, system, tools, transport)
     if provider == "scripted":
         from weightsmith.reasoning.scripted import ScriptedConversation
 

@@ -138,7 +138,7 @@ Profiles exist for two families, chosen by `model_type` in `config.json`: `gpt2`
 
 **`repair (strategies = [...])`** is the one declarative mutation. The planner takes the findings about the target that describe the current working copy, and pairs each with the first listed strategy that handles its kind. Findings no strategy handles are reported as unrepaired. If there are findings and none can be handled, the run fails with "no applicable strategy". Findings made before a later edit are stale and are not used. The program must contain a `find` on the target before `repair`, and at least one listed strategy must handle a finder the program runs.
 
-**`delegate E (task = ..., tools = [...], practice = [...])`** hands the working copy to editor `E` (section 7a) until it stops calling tools or a budget runs out. Every change it makes is a mutation of the working copy like any other: budgeted, patched and verified by the contract. Give exactly one of `task` (a string) or `task_file` (a text file, read at compile time so the program hash covers it). `practice` lists the behaviours the editor may measure. A behaviour the contract verifies should not also be a practice behaviour (W306): the verdict would not be independent of the editor's search.
+**`delegate E (task = ..., tools = [...], practice = [...])`** hands the working copy to editor `E` (section 7a) until it stops calling tools or a budget runs out. Every change it makes is a mutation of the working copy like any other: budgeted, patched and verified by the contract. Give exactly one of `task` (a string), `task_file` (a text file, read at compile time so the program hash covers it) or `message_file` (a text file sent as the whole first message, see section 7a). `practice` lists the behaviours the editor may measure. A behaviour the contract verifies should not also be a practice behaviour (W306): the verdict would not be independent of the editor's search.
 
 **`contract { ... }`** declares what `verify` checks:
 
@@ -146,6 +146,7 @@ Profiles exist for two families, chosen by `model_type` in `config.json`: `gpt2`
 - `preserve B (tolerance = t [, min_n = k])`
 - `require finite`
 - `require changed_params (max = f)`
+- `require answer (editor = E, field = "F", matches = "regex")`
 
 `improve` and `preserve` need the target to be a `Model`.
 
@@ -206,6 +207,7 @@ The `min_ratio` condition matters when few items are compared or they are nearly
 |---|---|---|
 | `finite` | | no parameter of the working copy is NaN or infinite |
 | `changed_params` | `max` | the fraction of changed parameters is at most `max` |
+| `answer` | `editor`, `field`, `matches` | the last reply of editor `editor` in this run has a line `field: value` (markdown around the field name is ignored, and a heading `## field` takes the next line as its value) whose value matches the regular expression `matches`. The pattern is part of the program, never of the editor's messages. |
 
 **Metrics**: `accuracy`, the fraction of probe examples predicted correctly (section 4). Higher is better.
 
@@ -216,10 +218,26 @@ An editor is declared with a provider and settings. Providers:
 | Provider | Settings | Needs |
 |---|---|---|
 | `anthropic` | `model = "claude-opus-5-5"`, `effort = "high"` (`low` to `max`), `max_tokens = 64000` | the `anthropic` extra; credentials from the environment |
-| `openai` | `model` (required), `base_url` for any server that speaks the Chat Completions API, including local ones, `max_tokens = 16000`, `reasoning_effort` | the `openai` extra; `OPENAI_API_KEY` unless `base_url` is local |
+| `openai` | `model` (required), `api` (`responses` by default; `chat` for Chat Completions, the default when `base_url` is set), `base_url` for any server that speaks Chat Completions, including local ones, `effort` (`none` to `max`, as the model allows), `max_tokens = 64000` | the `openai` extra; `OPENAI_API_KEY` unless `base_url` is local |
 | `scripted` | `script`: a `weightsmith.script/v0` JSON file of turns, each with optional `text` and `calls` | nothing; deterministic |
 
-`delegate` arguments: `task` or `task_file`; `tools` (default `[describe, read_weights, stats]`); `practice` (default none); `max_steps = 20` (editor turns); `max_read = 20000` (numbers one read may return); `include_weights = false` (put every weight, as text, in the first message, for small networks).
+`delegate` arguments:
+
+- one of `task`, `task_file` or `message_file`;
+- `tools` (default `[describe, read_weights, stats]`; `[]` for none);
+- `protocol = "tools"` or `"blocks"` (below);
+- `system` or `system_file`: system instructions that replace Weightsmith's own;
+- `practice` (default none);
+- `max_steps = 20` (editor turns);
+- `max_read = 20000` (numbers one read may return);
+- `include_weights = false` (put every weight, as text, in the briefing, for small networks);
+- `weights_format`: how weights are written as text, `decimals(n)` or `int_scale(n)` (below).
+
+With the OpenAI Responses API, requests are sent with `store: false` and the encrypted reasoning items the model returns are sent back with the next request, so reasoning carries over between turns and every request is complete in itself.
+
+**Messages and weights as text.** By default the first message is a briefing written by Weightsmith. With `message_file`, the file is sent as it is instead, with `{{weights}}` replaced by every weight as text (no other placeholder exists, E367); this is how a program sends a prompt exactly as published elsewhere. Weights are written through the target's *view*: an optional `view.json` (`weightsmith.view/v0`) in the model directory lists the tensors to show, in order, each with the `label` the editor sees, the `param` it stands for, whether it is shown `transpose`d, and a `header` template (`{label}`, `{shape}` such as `500 x 32`, `{rows}`, `{cols}`, and for `int_scale` `{scale}` such as `1e-3`). Without a view every parameter is shown under its own name. Tensors are separated by a blank line and matrices are written one line per row. `decimals(n)` writes every value with `n` decimals (`-0.000` as `0.000`); `int_scale(n)` writes each tensor as integers times one power of ten chosen so that its largest entry keeps `n` significant digits, and starts each matrix row with its index. Both are lossy: an editor that edits what it read edits the rounded network.
+
+**Protocols.** With `protocol = "tools"` the editor calls function tools. With `protocol = "blocks"` it is given no function tools: it acts by writing a fenced block whose opening line names a tool, and only the last such block of a reply is read. A reply without one ends the delegation. Only tools that have a block form can be granted under this protocol (E368); with `tools = []` the editor answers once in text, which `require answer` can then check.
 
 **Tools.** A tool's effects must be allowed by the policy (E410).
 
@@ -286,6 +304,7 @@ Comparators, for a higher-is-better metric with `before` measured on the origina
 - `preserve`: `before - after <= tolerance`. Improvement satisfies `preserve`.
 - `require finite`: no parameter of the working copy is NaN or infinite.
 - `require changed_params`: changed parameters / total parameters `<= max`.
+- `require answer`: `verified` when the editor's `field` line matches `matches`, `failed` when it does not, `inconclusive` when the editor gave no such line or was not asked.
 
 A parameter counts as **changed** when its stored bits differ from the original. Baselines are measured once per behaviour and reused across `verify` statements.
 
@@ -310,7 +329,7 @@ In 0.1, `verify` raises a repaired finding to `experimentally_supported` only un
 
 1. **syntax**: E1xx.
 2. **names**: unknown or duplicate names, unknown registry entries (E2xx).
-3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope) and editors (E329 a setting outside its choices, E360 delegate to a non-editor, E361 task or task_file, E362 running tools on weights that cannot run, E363 unreadable task file, E364 credentials in a program; W306 practising on a verified behaviour, W307 practice without run_probes). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
+3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope) and editors (E329 a setting outside its choices, E360 delegate to a non-editor, E361 task or task_file, E362 running tools on weights that cannot run, E363 unreadable task file, E364 credentials in a program, E365 both `system` and `system_file`, E366 an unknown weight format, E367 an unknown placeholder in a message file, E368 a tool without a block form under `protocol = "blocks"`, E369 an invalid `answer` pattern; W306 practising on a verified behaviour, W307 practice without run_probes). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
 4. **effects**: policy rules (E40x), effect permission (E410), and W403 when `python` is granted without `mutate`.
 
 When an input file does not exist yet, structural checks are deferred to run time and a warning (W201, W202) says so. `check` never imports a tensor library.

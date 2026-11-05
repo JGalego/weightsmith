@@ -1,0 +1,87 @@
+// Experiment 1 of "Sparks of weight-space programming" (Rikiya Takehi, 2026): which game was
+// this policy network trained on?
+//
+// Each network is a PPO policy (500 -> 32 -> 32 -> 5, tanh, 17,253 weights) for one of four
+// games played on a 10 x 10 grid. The editor gets the article's prompt byte for byte: the grid,
+// the channels, the actions, the network formula, an open question (no list of games) and every
+// weight to 3 decimals. It has no tools and replies once. The answer key stays in this file.
+//
+// Get the networks first:  uv run python examples/wsp/fetch.py
+// Ask about one network:   weightsmith run examples/wsp/which_game.wsm --program Breakout
+//
+// This calls the OpenAI API (OPENAI_API_KEY, or a .env file) and costs money: about 74,000
+// input tokens per network.
+
+model N_a9f535cc = load("fixtures/which_game/a9f535cc")
+model N_dfc6cb65 = load("fixtures/which_game/dfc6cb65")
+model N_bdf99279 = load("fixtures/which_game/bdf99279")
+model N_0bbcc3ea = load("fixtures/which_game/0bbcc3ea")
+
+editor Astra = provider("openai", model = "gpt-6-astra", effort = "high")
+
+policy {
+    allow reason(max_calls = 1)
+}
+
+program Breakout {
+    target N_a9f535cc
+    delegate Astra (
+        message_file = "fixtures/which_game/message.txt",
+        weights_format = "decimals(3)",
+        system_file = "fixtures/which_game/instructions.md",
+        protocol = "blocks",
+        tools = [],
+        max_steps = 1
+    )
+    contract { require answer (editor = Astra, field = "Game", matches = "(?i)breakout|brick") }
+    verify
+    output { evaluation }
+}
+
+program Pong {
+    target N_dfc6cb65
+    delegate Astra (
+        message_file = "fixtures/which_game/message.txt",
+        weights_format = "decimals(3)",
+        system_file = "fixtures/which_game/instructions.md",
+        protocol = "blocks",
+        tools = [],
+        max_steps = 1
+    )
+    contract { require answer (editor = Astra, field = "Game", matches = "(?i)\\bpong\\b") }
+    verify
+    output { evaluation }
+}
+
+program PacMan {
+    target N_bdf99279
+    delegate Astra (
+        message_file = "fixtures/which_game/message.txt",
+        weights_format = "decimals(3)",
+        system_file = "fixtures/which_game/instructions.md",
+        protocol = "blocks",
+        tools = [],
+        max_steps = 1
+    )
+    contract { require answer (editor = Astra, field = "Game", matches = "(?i)pac-?\\s?man") }
+    verify
+    output { evaluation }
+}
+
+// The article counts Frogger, the classic road-crossing game, as Freeway.
+program Freeway {
+    target N_0bbcc3ea
+    delegate Astra (
+        message_file = "fixtures/which_game/message.txt",
+        weights_format = "decimals(3)",
+        system_file = "fixtures/which_game/instructions.md",
+        protocol = "blocks",
+        tools = [],
+        max_steps = 1
+    )
+    contract {
+        require answer (editor = Astra, field = "Game", matches = "(?i)freeway|frogger|road|traffic")
+    }
+    verify
+    output { evaluation }
+}

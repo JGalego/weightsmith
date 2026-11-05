@@ -116,6 +116,10 @@ class Backend(Protocol):
         """Values of each region as labelled rows, for reading weights as text."""
         ...
 
+    def arrays(self, tensors: Tensors, names: list[str]) -> dict[str, Any]:
+        """The named tensors as float64 NumPy arrays (for rendering them as text)."""
+        ...
+
     def assign(self, tensors: Tensors, regions: list[Region], values: list[float]) -> Tensors:
         """Write values into regions in row-major order; return the changed tensors."""
         ...

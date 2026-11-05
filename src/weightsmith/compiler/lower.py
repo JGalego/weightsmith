@@ -130,7 +130,16 @@ class _Lowerer:
         settings = dict(editor.params)
         provider = str(settings.pop("provider"))
         practice = tuple(self.load(self.file.bindings[b]) for b in values.get("practice", ()))
-        params = {k: values[k] for k in ("max_steps", "max_read", "include_weights") if k in values}
+        keys = (
+            "max_steps",
+            "max_read",
+            "include_weights",
+            "protocol",
+            "system",
+            "message",
+            "weights_format",
+        )
+        params = {k: values[k] for k in keys if k in values}
         return ir.Delegate(
             editor.name,
             provider,

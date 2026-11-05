@@ -10,6 +10,7 @@ warning says so.
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ from weightsmith.models.profiles import (
     RoleError,
     RoleRef,
 )
+from weightsmith.models.view import parse_format
 
 # --------------------------------------------------------------------------- results
 
@@ -735,9 +737,24 @@ class Checker:
                     return None
                 names.append(item.ident)
             return tuple(names)
+        if isinstance(expected, EditorType):
+            if not isinstance(expr, n.Name):
+                self.type_error("E328", f"'{spec.name}' expects an editor name", expr.span)
+                return None
+            binding = self.lookup(expr.ident, expr.span, self.bindings)
+            if binding is None:
+                return None
+            if binding.kind != "editor":
+                self.type_error(
+                    "E360", f"'{expr.ident}' is {binding.type}, not an editor", expr.span
+                )
+                return None
+            return expr.ident
         if isinstance(expected, SymbolType):
             return self._symbol(expr, expected.registry)
         if isinstance(expected, ListType) and isinstance(expected.elem, SymbolType):
+            if isinstance(expr, n.ListLit) and not expr.items and spec.allow_empty:
+                return ()
             if not isinstance(expr, n.ListLit) or not expr.items:
                 self.type_error(
                     "E323",
@@ -948,14 +965,51 @@ class Checker:
                 stmt.editor.span,
                 'declare one with: editor E = provider("anthropic")',
             )
-        if ("task" in values) == ("task_file" in values):
-            self.type_error("E361", "give exactly one of 'task' and 'task_file'", stmt.span)
-        elif "task_file" in values:
-            path = self._resolve_path(n.StrLit(values.pop("task_file"), span=stmt.span))
+        if sum(k in values for k in ("task", "task_file", "message_file")) != 1:
+            self.type_error(
+                "E361", "give exactly one of 'task', 'task_file' and 'message_file'", stmt.span
+            )
+        for key, into in (("task_file", "task"), ("message_file", "message")):
+            if key in values:
+                path = self._resolve_path(n.StrLit(values.pop(key), span=stmt.span))
+                try:
+                    values[into] = path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    self.type_error("E363", f"cannot read the {key}: {exc}", stmt.span)
+        if "system" in values and "system_file" in values:
+            self.type_error("E365", "give at most one of 'system' and 'system_file'", stmt.span)
+        elif "system_file" in values:
+            path = self._resolve_path(n.StrLit(values.pop("system_file"), span=stmt.span))
             try:
-                values["task"] = path.read_text(encoding="utf-8")
+                values["system"] = path.read_text(encoding="utf-8")
             except OSError as exc:
-                self.type_error("E363", f"cannot read the task file: {exc}", stmt.span)
+                self.type_error("E363", f"cannot read the system_file: {exc}", stmt.span)
+        if "weights_format" in values:
+            try:
+                parse_format(values["weights_format"])
+            except ValueError as exc:
+                self.type_error("E366", str(exc), stmt.span)
+        message = values.get("message")
+        if isinstance(message, str):
+            for placeholder in re.findall(r"\{\{([^}]*)\}\}", message):
+                if placeholder.strip() != "weights":
+                    self.type_error(
+                        "E367",
+                        f"the message file has an unknown placeholder {{{{{placeholder}}}}}",
+                        stmt.span,
+                        "the placeholder available is {{weights}}",
+                    )
+        tools_given = values.get("tools", ())
+        if values.get("protocol") == "blocks" and tools_given:
+            blocked = sorted(set(tools_given) - reg.BLOCK_TOOLS)
+            if blocked:
+                self.type_error(
+                    "E368",
+                    f'under protocol = "blocks" the editor writes blocks, so the tools '
+                    f"{', '.join(blocked)} cannot be granted",
+                    stmt.span,
+                    f"tools available as blocks: {', '.join(sorted(reg.BLOCK_TOOLS)) or 'none'}",
+                )
         tools = set(values.get("tools", ()))
         target = state.target
         runs = tools & {"run_probes", "forward"} or values.get("practice")
@@ -1228,9 +1282,15 @@ class Checker:
                         _available("requirements", reg.REQUIREMENTS),
                     )
                     continue
-                checked.kwargs[id(item)] = self.check_kwargs(
-                    item.kwargs, spec.params, spec.name, item.span
-                )
+                values = self.check_kwargs(item.kwargs, spec.params, spec.name, item.span)
+                checked.kwargs[id(item)] = values
+                if isinstance(values.get("matches"), str):
+                    try:
+                        re.compile(values["matches"])
+                    except re.error as exc:
+                        self.type_error(
+                            "E369", f"'matches' is not a valid regular expression: {exc}", item.span
+                        )
                 continue
             clause = reg.CLAUSES[item.clause]
             values = self.check_kwargs(item.kwargs, clause.params, item.clause, item.span)

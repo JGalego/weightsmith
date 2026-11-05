@@ -10,3 +10,9 @@ build/
 examples/fixtures/
 out/
 editors/vscode/*.vsix
+
+# Local secrets
+.env
+.env.*
+!.env.example
+examples/wsp/fixtures/

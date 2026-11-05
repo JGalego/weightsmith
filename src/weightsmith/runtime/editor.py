@@ -21,6 +21,8 @@ from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.errors import BudgetExceeded, WeightsmithError
 from weightsmith.models.hf import HFArch
 from weightsmith.models.profiles import RoleError, parse_index, parse_role
+from weightsmith.models.view import View, default_view, parse_format, read_view, render
+from weightsmith.reasoning.blocks import Block
 from weightsmith.reasoning.provider import ToolCall, ToolResult, ToolSchema
 from weightsmith.registry import EDIT_OPS, FINDERS, TOOLS
 from weightsmith.runtime.context import LoadedBehavior, LoadedWeights
@@ -230,8 +232,41 @@ class EditorSession:
             out[value.binding] = value
         return out
 
+    @property
+    def blocks(self) -> bool:
+        return self.op.params.get("protocol") == "blocks"
+
     def schemas(self) -> list[ToolSchema]:
+        if self.blocks:
+            return []  # the editor acts by writing blocks, see run_block
         return [ToolSchema(name, TOOLS[name].doc, SCHEMAS[name]) for name in self.op.tools]
+
+    def run_block(self, block: Block) -> str:
+        """Run a block the editor wrote; the result is sent back as the next message."""
+        self.log.append({"block": block.kind, "body": _short(block.body)})
+        raise WeightsmithError(f"no block runner for '{block.kind}'")  # none is granted yet
+
+    def system_prompt(self) -> str:
+        return str(self.op.params.get("system") or SYSTEM_PROMPT)
+
+    def first_message(self) -> str:
+        """The program's own message, {{weights}} filled in, if it gave one; else a briefing."""
+        message = self.op.params.get("message")
+        if message is None:
+            return self.briefing()
+        return re.sub(r"\{\{\s*weights\s*\}\}", lambda _: self.weights_text(), str(message))
+
+    def view(self) -> View:
+        target = self.target
+        view = read_view(target.path) if target.path.is_dir() else None
+        return view or default_view(self.executor.backend.manifest(target.tensors).names())
+
+    def weights_text(self) -> str:
+        """Every weight in the view, written in the delegation's weight format."""
+        view = self.view()
+        fmt = parse_format(str(self.op.params.get("weights_format") or "decimals(4)"))
+        arrays = self.executor.backend.arrays(self.tensors, [t.param for t in view.tensors])
+        return render(view, fmt, arrays)
 
     def briefing(self) -> str:
         target = self.target
@@ -264,11 +299,14 @@ class EditorSession:
         if goals:
             lines.append(f"After you finish, the program will verify: {goals}.")
         if self.op.params.get("include_weights"):
-            regions = [Region(n) for n in manifest.names()]
-            try:
-                lines += ["", "Weights:", self._read(regions, 4)]
-            except WeightsmithError as exc:
-                lines += ["", f"(The weights are not included: {exc})"]
+            if self.op.params.get("weights_format"):
+                lines += ["", "Weights:", self.weights_text()]
+            else:
+                regions = [Region(n) for n in manifest.names()]
+                try:
+                    lines += ["", "Weights:", self._read(regions, 4)]
+                except WeightsmithError as exc:
+                    lines += ["", f"(The weights are not included: {exc})"]
         return "\n".join(lines)
 
     def _budget_text(self) -> str:
