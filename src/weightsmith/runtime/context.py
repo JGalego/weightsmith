@@ -19,6 +19,7 @@ from weightsmith.models.profiles import Profile
 @dataclass(slots=True)
 class RunOptions:
     out_dir: Path | None = None
+    replay: Path | None = None  # directory of transcripts to replay editors from
     dry_run: bool = False
     overwrite: bool = False
     seed: int = 0
@@ -75,6 +76,20 @@ class Budgets:
     policy: Policy
     forward_passes: int = 0
     bytes_loaded: int = 0
+    editor_calls: int = 0
+    editor_tokens: int = 0
+
+    def reserve_editor_call(self, span: Span | None) -> None:
+        limit = self.policy.budget(Effect.REASON, "max_calls")
+        if limit is not None and self.editor_calls + 1 > limit:
+            raise BudgetExceeded("reason", "max_calls", limit, self.editor_calls + 1, span)
+        self.editor_calls += 1
+
+    def add_editor_tokens(self, count: int) -> bool:
+        """Record tokens used; return False once the token budget is exceeded."""
+        self.editor_tokens += count
+        limit = self.policy.budget(Effect.REASON, "max_tokens")
+        return limit is None or self.editor_tokens <= limit
 
     def reserve_forward_passes(self, count: int, span: Span | None) -> None:
         limit = self.policy.budget(Effect.PROBE, "max_forward_passes")
@@ -106,6 +121,14 @@ class Budgets:
                 "limit": self.policy.budget(Effect.LOAD, "max_bytes"),
             },
             "changed_params": {"limit": self.policy.budget(Effect.MUTATE, "max_changed_params")},
+            "editor_calls": {
+                "used": self.editor_calls,
+                "limit": self.policy.budget(Effect.REASON, "max_calls"),
+            },
+            "editor_tokens": {
+                "used": self.editor_tokens,
+                "limit": self.policy.budget(Effect.REASON, "max_tokens"),
+            },
         }
 
 

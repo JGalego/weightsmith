@@ -10,6 +10,8 @@ model fixtures (``synthetic_lm``) are built only when the ``hf`` extra is instal
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,7 @@ from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE
 
 INPUT_BITS = 8
 HIDDEN = 64
-FIXTURE_VERSION = "3"
+FIXTURE_VERSION = "4"
 
 
 def all_inputs(bits: int = INPUT_BITS) -> torch.Tensor:
@@ -205,13 +207,9 @@ def write_model_dir(
 
 
 def _transformers_version() -> str | None:
-    import importlib.util
-
     if importlib.util.find_spec("transformers") is None:
         return None
-    import transformers
-
-    return transformers.__version__
+    return str(importlib.import_module("transformers").__version__)
 
 
 def _stamp() -> str:

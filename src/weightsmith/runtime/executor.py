@@ -25,6 +25,7 @@ from weightsmith.errors import (
     BudgetExceeded,
     IncompatibleError,
     PolicyViolation,
+    UnsupportedOperation,
     WeightsmithError,
 )
 from weightsmith.evaluation import verify as v
@@ -35,6 +36,7 @@ from weightsmith.models.archspec import ArchSpec
 from weightsmith.models.hf import SIDE_FILES, HFArch, read_profile
 from weightsmith.models.manifest import ARCH_FILE, WEIGHTS_FILE, weights_size
 from weightsmith.models.profiles import RoleError, parse_role
+from weightsmith.reasoning.provider import ToolResult
 from weightsmith.registry import FINDERS, METRICS
 from weightsmith.runtime import planner
 from weightsmith.runtime.context import (
@@ -82,6 +84,7 @@ class Executor:
         try:
             planner.check_backend(self.program, self.backend)
             self._check_policy()
+            self._check_editors()
             self._prepare_out_dir()
             for op in self.program.ops:
                 stop = self._execute(op)
@@ -106,6 +109,26 @@ class Executor:
                         "the policy does not allow",
                         op.span,
                     )
+
+    def _check_editors(self) -> None:
+        """Fail before any operation runs if an editor cannot be reached or replayed."""
+        from weightsmith.reasoning import missing_extra
+
+        if self.options.dry_run:
+            return
+        for index, op in enumerate(o for o in self.program.ops if isinstance(o, ir.Delegate)):
+            if self.options.replay is not None:
+                path = self.options.replay / _transcript_name(index, op)
+                if not path.is_file():
+                    raise WeightsmithError(f"no transcript to replay: {path}", op.span)
+                continue
+            extra = missing_extra(op.provider)
+            if extra is not None:
+                raise UnsupportedOperation(
+                    f"the '{op.provider}' editor needs the '{extra}' extra: "
+                    f"pip install 'weightsmith[{extra}]'",
+                    op.span,
+                )
 
     def _prepare_out_dir(self) -> None:
         if self.options.dry_run:
@@ -163,6 +186,8 @@ class Executor:
                 self._compose(op)
             case ir.Repair():
                 self._repair(op)
+            case ir.Delegate():
+                self._delegate(op)
             case ir.Verify():
                 return self._verify(op)
             case ir.Emit():
@@ -345,19 +370,46 @@ class Executor:
             )
         return loaded.profile.unit_groups(unit, loaded.profile.layers_of(role))
 
+    # helpers for editors ---------------------------------------------------------------------
+    def target_value(self) -> LoadedWeights:
+        return self._weights(self.program.target)
+
+    def working_changes(self) -> dict[str, int]:
+        assert self.working is not None
+        return self.working.changed()
+
+    def contract_summary(self) -> str:
+        items = [
+            f"{item.clause} {item.subject}"
+            + (
+                " (" + ", ".join(f"{k} {v}" for k, v in item.params.items() if k != "min_n") + ")"
+                if item.params
+                else ""
+            )
+            for op in self.program.ops
+            if isinstance(op, ir.Verify)
+            for item in op.items
+        ]
+        return "; ".join(dict.fromkeys(items))
+
     # mutation ------------------------------------------------------------------------------------
-    def _commit(self, op: ir.Op, changes: dict[str, Any], detail: str) -> None:
+    def apply_changes(self, op: ir.Op, changes: dict[str, Any]) -> float:
+        """Apply changes to the working copy if the mutate budget allows; return the fraction."""
         working = self.working
         assert working is not None
-        if not changes:
-            self._event(op, "noop", f"{detail}: nothing changed")
-            return
         prospective = {**working.tensors, **changes}
         counts = self.backend.changed_params(working.base, prospective)
         fraction = sum(counts.values()) / working.total if working.total else 0.0
         self.budgets.check_changed_fraction(fraction, op.span)
         working.tensors = prospective
         working.mutations.append(op.kind)
+        return fraction
+
+    def _commit(self, op: ir.Op, changes: dict[str, Any], detail: str) -> None:
+        if not changes:
+            self._event(op, "noop", f"{detail}: nothing changed")
+            return
+        fraction = self.apply_changes(op, changes)
         self._event(
             op,
             "dry-run" if self.options.dry_run else "ok",
@@ -412,6 +464,102 @@ class Executor:
                 + ", ".join(sorted({f.kind for f in plan.unhandled}))
             )
         self._commit(op, changes, detail)
+
+    # delegation ----------------------------------------------------------------------------------
+    def _delegate(self, op: ir.Delegate) -> None:
+        from weightsmith.reasoning import live_transport, open_conversation
+        from weightsmith.reasoning.provider import (
+            RecordingTransport,
+            ReplayTransport,
+            Transcript,
+        )
+        from weightsmith.runtime.editor import SYSTEM_PROMPT, EditorSession
+
+        if self.options.dry_run or self.out_dir is None:
+            self._event(op, "dry-run", "dry run: the editor was not called")
+            return
+        index = sum(
+            1 for o in self.program.ops[: self.program.ops.index(op)] if isinstance(o, ir.Delegate)
+        )
+        name = _transcript_name(index, op)
+        transcript = Transcript(op.editor, op.provider, dict(op.settings))
+        if self.options.replay is not None:
+            inner = ReplayTransport(Transcript.read(self.options.replay / name))
+        else:
+            inner = live_transport(op.provider, op.settings)
+        path = self.out_dir / "transcripts" / name
+        transport = RecordingTransport(inner, transcript, path)
+        session = EditorSession(self, op, self.out_dir / "sandbox" / name.removesuffix(".json"))
+        conversation = open_conversation(
+            op.provider, op.settings, SYSTEM_PROMPT, session.schemas(), transport
+        )
+        max_steps = int(op.params.get("max_steps", 20))
+        steps, stop, final = 0, "max_steps", ""
+        input_tokens = output_tokens = 0
+        results: tuple[Any, ...] = ()
+        first = True
+        while steps < max_steps:
+            try:
+                self.budgets.reserve_editor_call(op.span)
+            except BudgetExceeded as exc:
+                stop = f"budget: {exc.message}"
+                break
+            turn = conversation.send(session.briefing() if first else None, results)
+            first = False
+            steps += 1
+            input_tokens += turn.input_tokens
+            output_tokens += turn.output_tokens
+            within = self.budgets.add_editor_tokens(turn.input_tokens + turn.output_tokens)
+            if turn.text:
+                final = turn.text
+            if turn.stop == "refusal":
+                stop = f"refusal ({turn.detail})" if turn.detail else "refusal"
+                break
+            if not turn.calls:
+                stop = "finished"
+                break
+            if not within:
+                stop = "budget: reason max_tokens exceeded"
+                break
+            if turn.stop == "max_tokens":
+                results = tuple(
+                    ToolResult(
+                        c.id,
+                        "your response hit the output limit, so this call may be truncated "
+                        "and was not run; send smaller calls",
+                        is_error=True,
+                    )
+                    for c in turn.calls
+                )
+            else:
+                results = tuple(session.call(c) for c in turn.calls)
+        changed = sum(self.working_changes().values())
+        assert self.working is not None
+        record = {
+            "editor": op.editor,
+            "provider": op.provider,
+            "model": op.settings.get("model"),
+            "turns": steps,
+            "tool_calls": len(session.log),
+            "failed_tool_calls": sum(1 for e in session.log if "error" in e),
+            "stop": stop,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "changed_params_after": changed,
+            "final_message": final,
+            "log": session.log,
+            "transcript": str(path),
+            "replayed": self.options.replay is not None,
+        }
+        self.report.delegations.append(record)
+        self.report.artifacts[f"transcript {op.editor}"] = str(path)
+        self._event(
+            op,
+            "ok",
+            f"{steps} turn(s), {len(session.log)} tool call(s), stopped: {stop}; "
+            f"{changed / self.working.total:.4%} of parameters now differ from the original",
+            stop=stop,
+        )
 
     # verification --------------------------------------------------------------------------------
     def _verify(self, op: ir.Verify) -> bool:
@@ -568,6 +716,10 @@ class Executor:
             self.report.target["patch_changed_params"] = manifest.changed_params
         written = ", ".join(sorted(set(self.report.artifacts) & {"model", "patch"})) or "reports"
         self._event(op, "ok", f"wrote {written} to {self.out_dir}")
+
+
+def _transcript_name(index: int, op: ir.Delegate) -> str:
+    return f"{index:02d}-{op.editor}.json"
 
 
 def execute(

@@ -128,6 +128,15 @@ class SelectionDecl(Node):
 
 
 @dataclass(frozen=True, slots=True)
+class EditorDecl(Node):
+    """``editor E = provider("anthropic", model = "...")``: a language model that can edit."""
+
+    name: Ident
+    provider: StrLit
+    kwargs: tuple[Kwarg, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PolicyRule(Node):
     action: str  # "allow" | "forbid"
     effect: Ident
@@ -185,6 +194,14 @@ class RepairStmt(Node):
 
 
 @dataclass(frozen=True, slots=True)
+class DelegateStmt(Node):
+    """``delegate E (task = "...", tools = [...])``: hand the working copy to an editor."""
+
+    editor: Ident
+    kwargs: tuple[Kwarg, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ContractItem(Node):
     clause: str  # "preserve" | "improve" | "require"
     subject: Ident
@@ -213,6 +230,7 @@ Stmt = (
     | EditBlock
     | ComposeBlock
     | RepairStmt
+    | DelegateStmt
     | ContractBlock
     | VerifyStmt
     | OutputBlock
@@ -227,7 +245,7 @@ class Program(Node):
     body: tuple[Stmt, ...]
 
 
-Decl = LoadDecl | BehaviorDecl | SelectionDecl | PolicyBlock | Program
+Decl = LoadDecl | BehaviorDecl | SelectionDecl | EditorDecl | PolicyBlock | Program
 
 
 @dataclass(frozen=True, slots=True)

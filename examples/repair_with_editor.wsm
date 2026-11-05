@@ -1,0 +1,47 @@
+// Let an editor repair a language model through tools, then verify the result independently.
+//
+// The editor here is a script, so the run is deterministic and needs no API key. It practises on
+// the *_train probe suites; the contract verifies on the disjoint *_test suites, which the editor
+// never sees. Swap in a language model with, for example:
+//     editor Fixer = provider("anthropic", model = "claude-opus-5-5")
+// (see repair_with_claude.wsm).
+
+model LM = load("fixtures/tiny_llama_defective")
+
+behavior count_train    = probes("fixtures/tiny_llama/count_train.json",    metric = accuracy)
+behavior opposite_train = probes("fixtures/tiny_llama/opposite_train.json", metric = accuracy)
+behavior count_test     = probes("fixtures/tiny_llama/count_test.json",     metric = accuracy)
+behavior opposite_test  = probes("fixtures/tiny_llama/opposite_test.json",  metric = accuracy)
+behavior first_test     = probes("fixtures/tiny_llama/first_test.json",     metric = accuracy)
+
+editor Fixer = provider("scripted", script = "editors/repair_tiny_llama.json")
+
+program RepairWithEditor {
+    target LM
+
+    policy {
+        allow probe(max_forward_passes = 1000)
+        allow mutate(max_changed_params = 1%)
+        allow reason(max_calls = 20)
+        allow execute(max_seconds = 120)
+        allow save
+        forbid train
+    }
+
+    contract {
+        improve  count_test    (min_delta = 0.1)
+        preserve opposite_test (tolerance = 0.07, min_n = 16)
+        preserve first_test    (tolerance = 0.02)
+        require  finite
+    }
+
+    delegate Fixer (
+        task = "Counting ('count : 3 4 5' -> '6') is broken in this model. Find the cause in the weights and fix it without training and without harming the other tasks.",
+        tools = [describe, read_weights, stats, find, run_probes, forward, edit, set_weights, undo, python],
+        practice = [count_train, opposite_train],
+        max_steps = 12
+    )
+    verify
+
+    output { model, patch, evaluation }
+}

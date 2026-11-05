@@ -25,7 +25,7 @@ from weightsmith import registry
 from weightsmith.compiler.effects import Effect
 
 # Keywords that introduce a name.
-DECLARATIONS = ("model", "weights", "behavior", "selection", "program", "let")
+DECLARATIONS = ("model", "weights", "behavior", "selection", "editor", "program", "let")
 # Keywords that start a block or a statement.
 STATEMENTS = (
     "policy",
@@ -36,6 +36,7 @@ STATEMENTS = (
     "edit",
     "compose",
     "repair",
+    "delegate",
     "contract",
     "verify",
     "output",
@@ -47,7 +48,7 @@ KEYWORDS = DECLARATIONS + STATEMENTS + RULES + CONSTANTS
 
 # Built-in functions of the declaration syntax, then every name a registry or the effect system
 # defines. Keywords win where a name is both (`inspect`, `model`).
-FUNCTIONS = ("load", "probes")
+FUNCTIONS = ("load", "probes", "provider")
 BUILTINS = tuple(
     sorted(
         (
@@ -59,6 +60,8 @@ BUILTINS = tuple(
             | set(registry.METRICS)
             | set(registry.REQUIREMENTS)
             | set(registry.OUTPUTS)
+            | set(registry.PROVIDERS)
+            | set(registry.TOOLS)
             | {e.value for e in Effect}
         )
         - set(KEYWORDS)

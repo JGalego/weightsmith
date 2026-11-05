@@ -63,7 +63,7 @@ readme-image:
 # Package the VS Code extension and install it into the `code` on PATH
 vscode:
     cd editors/vscode && npx --yes @vscode/vsce package --skip-license -o weightsmith.vsix
-    code --install-extension editors/vscode/weightsmith.vsix --force
+    code --install-extension "{{justfile_directory()}}/editors/vscode/weightsmith.vsix" --force
 
 # Remove caches, build output and run output
 clean:

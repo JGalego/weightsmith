@@ -185,6 +185,117 @@ class PyTorchBackend:
         predictions = logits.argmax(dim=1)
         return float((predictions == labels).double().mean())
 
+    def examples(
+        self, arch: Architecture, tensors: Tensors, suite: ProbeSuite
+    ) -> list[dict[str, Any]]:
+        """Each probe example with its prediction, for showing an editor where a model fails."""
+        if isinstance(arch, HFArch):
+            run = self.runner(arch, tensors)
+            predicted, targets = run.predict(tensors, suite)
+            rows = []
+            for example, p, t in zip(suite.token_examples, predicted, targets, strict=True):
+                rows.append(
+                    {
+                        "prompt": example.prompt
+                        if example.prompt is not None
+                        else example.prompt_ids,
+                        "target": run.decode(t),
+                        "predicted": run.decode(p),
+                        "correct": p == t,
+                    }
+                )
+            return rows
+        x = torch.tensor([e.input for e in suite.vector_examples], dtype=torch.float32)
+        logits = forward(arch, tensors, x)
+        if suite.output_slice is not None:
+            logits = logits[:, suite.output_slice[0] : suite.output_slice[1]]
+        predictions = logits.argmax(dim=1).tolist()
+        return [
+            {"input": e.input, "label": e.label, "predicted": p, "correct": p == e.label}
+            for e, p in zip(suite.vector_examples, predictions, strict=True)
+        ]
+
+    def run_inputs(
+        self,
+        arch: Architecture,
+        tensors: Tensors,
+        prompts: list[str | list[int]] | None = None,
+        inputs: list[list[float]] | None = None,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Outputs for inputs an editor wrote: next-token candidates, or output vectors."""
+        if isinstance(arch, HFArch):
+            if not prompts:
+                raise IncompatibleError("a language model takes 'prompts'")
+            run = self.runner(arch, tensors)
+            return [
+                {
+                    "prompt": prompt,
+                    "next": [
+                        {"token": run.decode(token), "id": token, "p": round(p, 4)}
+                        for token, p in top
+                    ],
+                }
+                for prompt, top in zip(
+                    prompts, run.top_tokens(tensors, prompts, top_k), strict=True
+                )
+            ]
+        if not inputs:
+            raise IncompatibleError("this model takes 'inputs' (lists of numbers)")
+        outputs = forward(arch, tensors, torch.tensor(inputs, dtype=torch.float32))
+        return [
+            {"input": i, "output": [round(v, 5) for v in o]}
+            for i, o in zip(inputs, outputs.tolist(), strict=True)
+        ]
+
+    def region_values(self, tensors: Tensors, regions: list[Region]) -> list[dict[str, Any]]:
+        """The values of each region, as rows labelled with their index in the tensor."""
+        blocks = []
+        for region in regions:
+            t = tensors[region.tensor]
+            slices = ops.region_slices(t, region.index)
+            sub = t[slices].detach().double()
+            first = slices[0].start or 0 if slices else 0
+            if sub.dim() == 0:
+                rows: list[tuple[int | None, list[float]]] = [(None, [sub.item()])]
+            elif sub.dim() == 1:
+                rows = [(None, sub.tolist())]
+            else:
+                flat = sub.reshape(sub.shape[0], -1)
+                rows = [(first + i, row) for i, row in enumerate(flat.tolist())]
+            blocks.append(
+                {
+                    "region": str(region),
+                    "shape": list(sub.shape),
+                    "dtype": str(t.dtype).removeprefix("torch."),
+                    "numel": int(sub.numel()),
+                    "rows": rows,
+                }
+            )
+        return blocks
+
+    def assign(self, tensors: Tensors, regions: list[Region], values: list[float]) -> Tensors:
+        """Write ``values`` into the regions, in order, each region in row-major order."""
+        changed: Tensors = {}
+        offset = 0
+        union = ops.region_masks(tensors, regions)
+        total = sum(int(m.sum()) for m in union.values())
+        sizes = [int(ops.region_mask(tensors[r.tensor], r.index).sum()) for r in regions]
+        if sum(sizes) != total:
+            raise IncompatibleError("the selection's regions overlap; write them one at a time")
+        if len(values) != total:
+            raise IncompatibleError(
+                f"the selection has {total} entries but {len(values)} values were given"
+            )
+        for region, size in zip(regions, sizes, strict=True):
+            current = changed.get(region.tensor, tensors[region.tensor])
+            mask = ops.region_mask(current, region.index)
+            new = current.clone()
+            new[mask] = torch.tensor(values[offset : offset + size], dtype=current.dtype)
+            changed[region.tensor] = new
+            offset += size
+        return changed
+
     def runner(self, arch: HFArch, tensors: Tensors) -> hf.HFRunner:
         key = str(arch.directory.resolve())
         if key not in self._runners:

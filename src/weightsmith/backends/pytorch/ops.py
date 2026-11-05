@@ -21,6 +21,12 @@ Tensors = dict[str, torch.Tensor]
 def region_mask(tensor: torch.Tensor, index: tuple[IndexSpec, ...]) -> torch.Tensor:
     """A boolean mask selecting the region described by ``index`` (everything if empty)."""
     mask = torch.zeros(tensor.shape, dtype=torch.bool)
+    mask[region_slices(tensor, index)] = True
+    return mask
+
+
+def region_slices(tensor: torch.Tensor, index: tuple[IndexSpec, ...]) -> tuple[slice, ...]:
+    """The region described by ``index`` as slices; every dimension is kept."""
     if len(index) > tensor.dim():
         raise IncompatibleError(f"slice has {len(index)} dimensions but tensor has {tensor.dim()}")
     slices: list[slice] = []
@@ -34,8 +40,7 @@ def region_mask(tensor: torch.Tensor, index: tuple[IndexSpec, ...]) -> torch.Ten
                 f"index {spec} is out of range for dimension {dim} (size {size})"
             )
         slices.append(slice(spec.start, spec.stop))
-    mask[tuple(slices)] = True
-    return mask
+    return tuple(slices)
 
 
 def region_masks(tensors: Tensors, regions: list[Region]) -> dict[str, torch.Tensor]:

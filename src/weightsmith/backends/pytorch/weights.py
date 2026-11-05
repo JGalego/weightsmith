@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
 from safetensors import SafetensorError
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file, save
 
 from weightsmith.errors import LoadError
 from weightsmith.models.archspec import ArchSpec, read_archspec
@@ -103,4 +105,20 @@ def load_model(path: Path) -> Model:
 def save_weights(tensors: Tensors, file: Path, metadata: dict[str, str] | None = None) -> None:
     file.parent.mkdir(parents=True, exist_ok=True)
     contiguous = {name: t.detach().contiguous() for name, t in tensors.items()}
-    save_file(contiguous, str(file), metadata=metadata)
+    file.write_bytes(_sorted_metadata(save(contiguous, metadata=metadata)))
+
+
+def _sorted_metadata(data: bytes) -> bytes:
+    """Rewrite the header with its metadata keys sorted.
+
+    safetensors keeps metadata in a hash map, so the same weights and metadata can be written
+    with the keys in a different order each time. Sorting them makes outputs byte-for-byte
+    reproducible. Tensor offsets are relative to the end of the header, so they stay valid.
+    """
+    (size,) = struct.unpack("<Q", data[:8])
+    header = json.loads(data[8 : 8 + size])
+    if "__metadata__" in header:
+        header["__metadata__"] = dict(sorted(header["__metadata__"].items()))
+    encoded = json.dumps(header, separators=(",", ":")).encode()
+    encoded += b" " * (-len(encoded) % 8)  # keep the data 8-byte aligned, as safetensors does
+    return struct.pack("<Q", len(encoded)) + encoded + data[8 + size :]

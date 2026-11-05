@@ -1,6 +1,6 @@
 # Weightsmith language semantics
 
-Language version 0.2. This document defines the language. The Python package is one implementation of it; where the implementation and this document disagree, the implementation has a bug.
+This document defines the language as currently implemented; it has not been released. The Python package is one implementation of it; where the implementation and this document disagree, the implementation has a bug.
 
 ## 1. Model of computation
 
@@ -34,10 +34,11 @@ The normative grammar is `src/weightsmith/language/grammar.lark`. In EBNF:
 
 ```ebnf
 file          = { decl } ;
-decl          = load_decl | behavior_decl | selection_decl | policy_block | program ;
+decl          = load_decl | behavior_decl | selection_decl | editor_decl | policy_block | program ;
 load_decl     = ( "model" | "weights" ) NAME "=" "load" "(" STRING ")" ;
 behavior_decl = "behavior" NAME "=" "probes" "(" STRING { "," kwarg } ")" ;
 selection_decl= "selection" NAME "=" expr ;
+editor_decl   = "editor" NAME "=" "provider" "(" STRING { "," kwarg } ")" ;
 policy_block  = "policy" "{" { ( "allow" | "forbid" ) NAME [ kwargs ] } "}" ;
 program       = "program" NAME "{" "target" NAME { stmt } "}" ;
 
@@ -47,6 +48,7 @@ stmt          = "let" NAME "=" expr
               | "edit" "{" { op_stmt } "}"
               | "compose" "{" { op_stmt } "}"
               | "repair" [ kwargs ]
+              | "delegate" NAME [ kwargs ]
               | "contract" "{" { ( "preserve" | "improve" | "require" ) NAME [ kwargs ] } "}"
               | "verify"
               | "output" "{" [ NAME { "," NAME } ] "}"
@@ -72,6 +74,7 @@ Paths in `load` and `probes` are resolved relative to the directory of the sourc
 | `model M = load(p)` | `p` is a directory with weights and an architecture: either `arch.json` (a Weightsmith sequential network) or a Hugging Face `config.json` (a causal language model). `M` has type `Model`, a `WeightSet` with an architecture, so it can also be probed. Running a Hugging Face model needs the `hf` extra; checking it does not. |
 | `behavior B = probes(p, metric = m)` | A probe suite (`weightsmith.probes/v0` JSON) plus a metric. `B` has type `Behavior`. |
 | `selection S = expr` | A named selection, usable in every program of the file. |
+| `editor E = provider(p, ...)` | An editor (section 7a): a language model, or a script, that can act on the target through tools. `E` has type `Editor`. Credentials never appear in a program. |
 | `policy { ... }` | The file-level policy (section 8). At most one per file. |
 | `program P { target T ... }` | A program whose target is the `model` or `weights` binding `T`. |
 
@@ -134,6 +137,8 @@ Profiles exist for two families, chosen by `model_type` in `config.json`: `gpt2`
 **`compose { op e (args) ... }`** combines the working copy with another weight set: `e` is a weight set or a selection of one, never of the target, and may be a slice or a role such as `Donor.layers[0].attn.heads[1]`. Only the selected entries change. Names and shapes must match.
 
 **`repair (strategies = [...])`** is the one declarative mutation. The planner takes the findings about the target that describe the current working copy, and pairs each with the first listed strategy that handles its kind. Findings no strategy handles are reported as unrepaired. If there are findings and none can be handled, the run fails with "no applicable strategy". Findings made before a later edit are stale and are not used. The program must contain a `find` on the target before `repair`, and at least one listed strategy must handle a finder the program runs.
+
+**`delegate E (task = ..., tools = [...], practice = [...])`** hands the working copy to editor `E` (section 7a) until it stops calling tools or a budget runs out. Every change it makes is a mutation of the working copy like any other: budgeted, patched and verified by the contract. Give exactly one of `task` (a string) or `task_file` (a text file, read at compile time so the program hash covers it). `practice` lists the behaviours the editor may measure. A behaviour the contract verifies should not also be a practice behaviour (W306): the verdict would not be independent of the editor's search.
 
 **`contract { ... }`** declares what `verify` checks:
 
@@ -204,16 +209,52 @@ The `min_ratio` condition matters when few items are compared or they are nearly
 
 **Metrics**: `accuracy`, the fraction of probe examples predicted correctly (section 4). Higher is better.
 
+## 7a. Editors
+
+An editor is declared with a provider and settings. Providers:
+
+| Provider | Settings | Needs |
+|---|---|---|
+| `anthropic` | `model = "claude-opus-5-5"`, `effort = "high"` (`low` to `max`), `max_tokens = 64000` | the `anthropic` extra; credentials from the environment |
+| `openai` | `model` (required), `base_url` for any server that speaks the Chat Completions API, including local ones, `max_tokens = 16000`, `reasoning_effort` | the `openai` extra; `OPENAI_API_KEY` unless `base_url` is local |
+| `scripted` | `script`: a `weightsmith.script/v0` JSON file of turns, each with optional `text` and `calls` | nothing; deterministic |
+
+`delegate` arguments: `task` or `task_file`; `tools` (default `[describe, read_weights, stats]`); `practice` (default none); `max_steps = 20` (editor turns); `max_read = 20000` (numbers one read may return); `include_weights = false` (put every weight, as text, in the first message, for small networks).
+
+**Tools.** A tool's effects must be allowed by the policy (E410).
+
+| Tool | Effect | Does |
+|---|---|---|
+| `describe` | inspect | lists tensors, the profile, budgets left, practice behaviours, what the contract verifies, edit operations and finders |
+| `read_weights` | inspect | values of a selection as text |
+| `stats` | inspect | per-tensor statistics of a selection |
+| `find` | inspect | runs a finder on the working copy |
+| `run_probes` | probe | accuracy on a practice behaviour, with failing examples; one forward pass per example |
+| `forward` | probe | next-token candidates for prompts, or outputs for input vectors; one forward pass per input |
+| `edit` | mutate | an edit operation (section 7) on a selection |
+| `set_weights` | mutate | writes explicit values into a selection, region by region in row-major order |
+| `undo` | mutate | reverts the editor's last change |
+| `python` | execute | runs Python in a separate process with the weights as NumPy arrays `W`; arrays it changes are applied as edits, which also need `mutate` (W403) |
+
+Tools name selections with strings: `all`, `params["glob"]` with an optional slice, or a role path such as `layers[1].attn.heads[2]` (section 6).
+
+**The loop.** The runtime sends a briefing: the task, the target, the profile, budgets, practice behaviours and the contract's items, but never the contract's probes. Each turn, every tool call is checked and run; a failing call, or one that would exceed a budget, returns an error to the editor and the run continues. The editor stops by replying without a tool call; its account is recorded as a hypothesis. The delegation also stops at `max_steps`, at the `reason` budget, or on a refusal. Then the program continues with its next statement.
+
+**Recording and replay.** Every request and response is written to `<out>/transcripts/NN-E.json` (`weightsmith.transcript/v0`) as the run proceeds. `weightsmith run --replay DIR` answers each editor call from the recording instead of the provider. Requests are compared by SHA-256: if the weights, tools, budgets, task or any tool result differ from the recording, the replay stops with an error rather than continuing on a different path. Nothing derived from wall-clock time enters a request.
+
+**The `python` tool is not a security boundary.** Code runs as the current user, in a fresh process per call, with a minimal environment (no credentials) and a time budget. Files written in its working directory persist between calls. Allow `execute` only for editors you would let run code on your machine.
+
 ## 8. Effects and policies
 
 | Effect | Performed by | Budgets |
 |---|---|---|
 | `load` | loading weights and probe suites | `max_bytes` |
-| `inspect` | `inspect`, `find`, `verify` with only `require` items | |
-| `probe` | `verify` with `preserve`/`improve` items | `max_forward_passes`: one per probe example per evaluation |
-| `mutate` | `edit`, `compose`, `repair` | `max_changed_params`: a fraction of the target's parameters |
-| `train` | nothing in 0.1 | `max_steps` |
-| `reason` | nothing in 0.1; reserved for external reasoning providers | `max_calls` |
+| `inspect` | `inspect`, `find`, `verify` with only `require` items, and the reading tools of `delegate` | |
+| `probe` | `verify` with `preserve`/`improve` items, and `run_probes`/`forward` | `max_forward_passes`: one per probe example or input per evaluation |
+| `mutate` | `edit`, `compose`, `repair`, and the editing tools of `delegate` | `max_changed_params`: a fraction of the target's parameters |
+| `train` | nothing yet | `max_steps` |
+| `reason` | `delegate`: every call to an editor; may send model data off the machine | `max_calls` (editor turns), `max_tokens` (input plus output, as the provider reports them) |
+| `execute` | the `python` tool | `max_seconds`: wall time over all calls (default 600) |
 | `save` | `output { model }`, `output { patch }` | |
 
 **Defaults.** With no policy, `load` and `inspect` are allowed and everything else is forbidden. A policy block starts from the defaults and applies its rules. Each effect may appear once.
@@ -224,6 +265,7 @@ The `min_ratio` condition matters when few items are compared or they are nearly
 
 - A mutation that would exceed `max_changed_params` is not applied, and the run stops.
 - A behaviour check that would exceed `max_forward_passes` is not run and becomes `inconclusive`. The run stops after that `verify`.
+- Inside `delegate`, a tool call that would exceed a budget is refused and the editor is told; an exhausted `reason` budget ends the delegation, not the run.
 
 Budgets are never silently exceeded.
 
@@ -268,8 +310,8 @@ In 0.1, `verify` raises a repaired finding to `experimentally_supported` only un
 
 1. **syntax**: E1xx.
 2. **names**: unknown or duplicate names, unknown registry entries (E2xx).
-3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
-4. **effects**: policy rules (E40x) and effect permission (E410).
+3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope) and editors (E329 a setting outside its choices, E360 delegate to a non-editor, E361 task or task_file, E362 running tools on weights that cannot run, E363 unreadable task file, E364 credentials in a program; W306 practising on a verified behaviour, W307 practice without run_probes). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
+4. **effects**: policy rules (E40x), effect permission (E410), and W403 when `python` is granted without `mutate`.
 
 When an input file does not exist yet, structural checks are deferred to run time and a warning (W201, W202) says so. `check` never imports a tensor library.
 
@@ -302,6 +344,7 @@ A program lowers to a linear list of operations over numbered values (`weightsmi
 | `Transform` | edit operation on the working copy | mutate |
 | `Compose` | compose operation on the working copy | mutate |
 | `Repair` | planner-expanded repair | mutate |
+| `Delegate` | an editor acting through tools | reason, plus the effects of the granted tools |
 | `Verify` | evaluate contract items | probe or inspect |
 | `Emit` | write artifacts | save, if model or patch |
 

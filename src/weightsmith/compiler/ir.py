@@ -175,6 +175,34 @@ class Repair(Op):
 
 
 @dataclass(frozen=True, slots=True)
+class Delegate(Op):
+    """Hand the working copy to an editor, which acts through ``tools`` until it stops.
+
+    ``settings`` configure the provider (model, effort, script path). ``practice`` are the
+    behaviour values the editor may measure. Every change the editor makes goes through the same
+    working copy, budgets and patches as any other mutation.
+    """
+
+    kind: ClassVar[str] = "delegate"
+    editor: str
+    provider: str
+    settings: Params
+    task: str
+    tools: tuple[str, ...]
+    practice: tuple[int, ...] = ()
+    params: Params = field(default_factory=dict)
+
+    def effects(self) -> frozenset[Effect]:
+        from weightsmith.registry import TOOLS
+
+        granted = frozenset().union(*(TOOLS[t].effects for t in self.tools if t in TOOLS))
+        return frozenset({Effect.REASON}) | granted
+
+    def describe(self) -> str:
+        return f"delegate {self.editor}"
+
+
+@dataclass(frozen=True, slots=True)
 class ContractItem:
     clause: str  # "preserve" | "improve" | "require"
     subject: str
@@ -209,7 +237,8 @@ class Emit(Op):
 
 
 OP_TYPES: dict[str, type[Op]] = {
-    cls.kind: cls for cls in (Load, Select, Inspect, Find, Transform, Compose, Repair, Verify, Emit)
+    cls.kind: cls
+    for cls in (Load, Select, Inspect, Find, Transform, Compose, Repair, Delegate, Verify, Emit)
 }
 
 
@@ -362,9 +391,9 @@ def _op_from_dict(data: dict[str, Any]) -> Op:
                 )
                 for i in value
             )
-        elif name in ("outputs", "strategies"):
+        elif name in ("outputs", "strategies", "tools", "practice"):
             kwargs[name] = tuple(value)
-        elif name == "params":
+        elif name in ("params", "settings"):
             kwargs[name] = _detuple(value)
         else:
             kwargs[name] = value
@@ -406,6 +435,13 @@ def _op_text(op: Op) -> str:
             return f"compose {op.op} %{op.operand}{_fmt_params(op.params)}"
         case Repair():
             return f"repair (strategies=[{', '.join(op.strategies)}])"
+        case Delegate():
+            practice = ", ".join(f"%{p}" for p in op.practice)
+            return (
+                f"delegate {op.editor} ({op.provider}; tools=[{', '.join(op.tools)}]"
+                + (f"; practice=[{practice}]" if practice else "")
+                + ")"
+            )
         case Verify():
             items = "; ".join(
                 f"{i.clause} {i.subject}"

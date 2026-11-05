@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 import torch
+from safetensors import safe_open
 
 from weightsmith import registry
 from weightsmith.backends.base import Capability
 from weightsmith.backends.pytorch import PyTorchBackend, finders, ops
+from weightsmith.backends.pytorch.weights import load_weights, save_weights
 from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.errors import IncompatibleError, UnsupportedOperation
 from weightsmith.runtime.planner import check_backend
@@ -165,3 +167,16 @@ def test_planner_refuses_backends_without_capabilities(workspace: Path) -> None:
         check_backend(program, _LimitedBackend(num_threads=None))
     assert "capability 'repair'" in str(info.value)
     assert "capability 'forward'" in str(info.value)
+
+
+def test_saved_weights_do_not_depend_on_metadata_order(tmp_path: Path) -> None:
+    tensors = {"b": torch.ones(3, 5), "a": torch.arange(7, dtype=torch.float32)}
+    keys = [f"key{i}" for i in range(12)]
+    save_weights(tensors, tmp_path / "x.safetensors", {k: k.upper() for k in keys})
+    save_weights(tensors, tmp_path / "y.safetensors", {k: k.upper() for k in reversed(keys)})
+    data = (tmp_path / "x.safetensors").read_bytes()
+    assert data == (tmp_path / "y.safetensors").read_bytes()
+    with safe_open(tmp_path / "x.safetensors", "pt") as f:
+        assert f.metadata() == {k: k.upper() for k in keys}
+    loaded = load_weights(tmp_path / "x.safetensors")
+    assert all(torch.equal(loaded.tensors[k], t) for k, t in tensors.items())

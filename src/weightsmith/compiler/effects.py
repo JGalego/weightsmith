@@ -24,8 +24,9 @@ class Effect(StrEnum):
     INSPECT = "inspect"  # read parameter values
     PROBE = "probe"  # run forward passes
     MUTATE = "mutate"  # change parameters of the working copy
-    TRAIN = "train"  # run an optimiser (no v0.1 operation does this)
-    REASON = "reason"  # call an external reasoning provider (no v0.1 operation does this)
+    TRAIN = "train"  # run an optimiser (no operation does this yet)
+    REASON = "reason"  # call a language model acting as an editor; may send model data off-machine
+    EXECUTE = "execute"  # run code an editor wrote, on this machine
     SAVE = "save"  # write model or patch artifacts
 
 
@@ -35,12 +36,13 @@ BUDGETS: dict[Effect, dict[str, Type]] = {
     Effect.PROBE: {"max_forward_passes": INT},
     Effect.MUTATE: {"max_changed_params": FRACTION},
     Effect.TRAIN: {"max_steps": INT},
-    Effect.REASON: {"max_calls": INT},
+    Effect.REASON: {"max_calls": INT, "max_tokens": INT},
+    Effect.EXECUTE: {"max_seconds": INT},
     Effect.SAVE: {},
 }
 
 DEFAULT_ALLOWED = frozenset({Effect.LOAD, Effect.INSPECT})
-UNIMPLEMENTED = frozenset({Effect.TRAIN, Effect.REASON})
+UNIMPLEMENTED = frozenset({Effect.TRAIN})
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +154,7 @@ def policy_from_block(block: n.PolicyBlock, origin: str, sink: DiagnosticSink) -
                 budgets[name] = value
         if effect in UNIMPLEMENTED:
             sink.warning(
-                Stage.EFFECTS, "W401", f"no operation in Weightsmith 0.1 uses '{effect}'", rule.span
+                Stage.EFFECTS, "W401", f"no Weightsmith operation uses '{effect}' yet", rule.span
             )
         builder.grants[effect] = Grant(True, tuple(sorted(budgets.items())))
     return Policy(tuple(builder.grants.items()), origin)
@@ -236,6 +238,17 @@ def check_effects(program: IRProgram, sink: DiagnosticSink) -> None:
                     op.span,
                     f"add 'allow {effect}' to the program's policy block",
                 )
+    from weightsmith.compiler.ir import Delegate
+
+    for op in program.ops:
+        if isinstance(op, Delegate) and "python" in op.tools and not policy.allows(Effect.MUTATE):
+            sink.warning(
+                Stage.EFFECTS,
+                "W403",
+                f"'{op.describe()}' grants python, but the policy does not allow mutate, so the "
+                "editor's code can analyse the weights but its changes will be refused",
+                op.span,
+            )
     probe_limit = policy.budget(Effect.PROBE, "max_forward_passes")
     needed = program.estimated_forward_passes()
     if probe_limit is not None and needed is not None and needed > probe_limit:

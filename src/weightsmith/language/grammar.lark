@@ -1,4 +1,4 @@
-// Weightsmith grammar (language version 0.1). See docs/semantics.md for the semantics.
+// Weightsmith grammar. See docs/semantics.md for the semantics.
 // Whitespace, including newlines, is insignificant. Every statement starts with a keyword,
 // so no separators are needed.
 
@@ -6,6 +6,7 @@ start: decl*
 
 ?decl: load_decl
      | behavior_decl
+     | editor_decl
      | selection_decl
      | policy_block
      | program
@@ -13,6 +14,7 @@ start: decl*
 load_decl: (MODEL | WEIGHTS) NAME "=" "load" "(" STRING ")"
 behavior_decl: "behavior" NAME "=" "probes" "(" STRING ("," kwarg)* ")"
 selection_decl: "selection" NAME "=" expr
+editor_decl: "editor" NAME "=" "provider" "(" STRING ("," kwarg)* ")"
 
 policy_block: "policy" "{" policy_rule* "}"
 policy_rule: (ALLOW | FORBID) NAME kwargs?
@@ -25,6 +27,7 @@ program: "program" NAME "{" "target" NAME stmt* "}"
      | edit_block
      | compose_block
      | repair_stmt
+     | delegate_stmt
      | contract_block
      | verify_stmt
      | output_block
@@ -37,6 +40,7 @@ edit_block: "edit" "{" op_stmt* "}"
 compose_block: "compose" "{" op_stmt* "}"
 op_stmt: NAME expr kwargs?
 repair_stmt: "repair" kwargs?
+delegate_stmt: "delegate" NAME kwargs?
 contract_block: "contract" "{" contract_item* "}"
 contract_item: (PRESERVE | IMPROVE | REQUIRE) NAME kwargs?
 verify_stmt: "verify"

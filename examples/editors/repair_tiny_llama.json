@@ -1,0 +1,64 @@
+{
+  "format": "weightsmith.script/v0",
+  "turns": [
+    {
+      "text": "First, the model and how badly counting fails.",
+      "calls": [
+        {
+          "name": "describe",
+          "arguments": {}
+        },
+        {
+          "name": "run_probes",
+          "arguments": {
+            "behavior": "count_train",
+            "show_failures": 3
+          }
+        }
+      ]
+    },
+    {
+      "text": "Counting is broken but the other tasks are not, so look for MLP neurons with unusual weight norms.",
+      "calls": [
+        {
+          "name": "find",
+          "arguments": {
+            "finder": "outlier_neurons",
+            "select": "layers[:]"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Two neurons stand out. Rescale the parts of them that are far above their peers.",
+      "calls": [
+        {
+          "name": "python",
+          "arguments": {
+            "code": "import numpy as np\n\nfixed = []\nfor layer in (0, 1):\n    p = f\"model.layers.{layer}.mlp.\"\n    up, down = W[p + \"up_proj.weight\"], W[p + \"down_proj.weight\"]\n    for part, norms in ((\"up\", np.linalg.norm(up, axis=1)), (\"down\", np.linalg.norm(down, axis=0))):\n        median = np.median(norms)\n        for j in np.nonzero(norms > 4 * median)[0]:\n            if part == \"up\":\n                up[j] *= median / norms[j]\n            else:\n                down[:, j] *= median / norms[j]\n            fixed.append((layer, part, int(j), round(float(norms[j] / median), 1)))\nprint(\"rescaled (layer, part, neuron, times the median):\", fixed)\n"
+          }
+        }
+      ]
+    },
+    {
+      "text": "Check the practice behaviours.",
+      "calls": [
+        {
+          "name": "run_probes",
+          "arguments": {
+            "behavior": "count_train"
+          }
+        },
+        {
+          "name": "run_probes",
+          "arguments": {
+            "behavior": "opposite_train"
+          }
+        }
+      ]
+    },
+    {
+      "text": "I rescaled the up-projection rows and down-projection columns of the MLP neurons in layer 0 whose norms were more than 4 times the median of their peers. Counting recovers on the practice probes and the opposite task is unchanged. I believe those neurons were amplified, and that their oversized output drowned the counting signal."
+    }
+  ]
+}

@@ -6,7 +6,7 @@ which projection matrices belong to that head. Profiles are derived from a Huggi
 tensor it relies on exists with the shape the configuration implies, so a role can never silently
 resolve to the wrong slice.
 
-Version 0.2 knows two families:
+Two families are supported:
 
 * ``gpt2``: GPT-2 style checkpoints with a fused query/key/value projection (``c_attn``) stored
   as ``Conv1D`` weights of shape ``(in, out)``.

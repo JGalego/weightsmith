@@ -45,6 +45,7 @@ class RunReport:
     inspections: list[dict[str, Any]] = field(default_factory=list)
     finder_results: list[FinderResult] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    delegations: list[dict[str, Any]] = field(default_factory=list)
     verdicts: list[Verdict] = field(default_factory=list)
     changes: dict[str, Any] = field(default_factory=dict)
     budgets: dict[str, Any] = field(default_factory=dict)
@@ -85,6 +86,7 @@ class RunReport:
             "inspections": self.inspections,
             "finders": [r.to_dict() for r in self.finder_results],
             "findings": [f.to_dict() for f in self.findings],
+            "delegations": self.delegations,
             "verdicts": [v.to_dict() for v in self.verdicts],
             "changes": self.changes,
             "budgets": self.budgets,

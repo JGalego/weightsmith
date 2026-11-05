@@ -82,6 +82,14 @@ class BehaviorType(Type):
 
 
 @dataclass(frozen=True, slots=True)
+class EditorType(Type):
+    """A declared editor: a language model (or a script) that may edit weights via tools."""
+
+    def __str__(self) -> str:
+        return "Editor"
+
+
+@dataclass(frozen=True, slots=True)
 class ListType(Type):
     elem: Type
 

@@ -8,6 +8,7 @@ stay tied.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 from typing import Any
 
@@ -36,12 +37,12 @@ def _require() -> None:
 class HFRunner:
     def __init__(self, arch: HFArch, tensors: Tensors) -> None:
         _require()
-        from transformers import AutoConfig, AutoModelForCausalLM
-
-        config = AutoConfig.from_pretrained(str(arch.directory), local_files_only=True)
+        # Imported untyped: type checkers would otherwise walk all of transformers.
+        transformers: Any = importlib.import_module("transformers")
+        config = transformers.AutoConfig.from_pretrained(str(arch.directory), local_files_only=True)
         floats = [t.dtype for t in tensors.values() if t.is_floating_point()]
         dtype = max(set(floats), key=floats.count) if floats else torch.float32
-        self.model: Any = AutoModelForCausalLM.from_config(config, dtype=dtype)
+        self.model: Any = transformers.AutoModelForCausalLM.from_config(config, dtype=dtype)
         self.model.eval()
         self.arch = arch
         self.keymap, self.unused = self._map_names(tensors)
@@ -79,9 +80,8 @@ class HFRunner:
         if self._tokenizer is None:
             if not self.arch.has_tokenizer:
                 raise IncompatibleError(f"{self.arch.directory} has no tokenizer files")
-            from transformers import AutoTokenizer
-
-            self._tokenizer = AutoTokenizer.from_pretrained(
+            transformers: Any = importlib.import_module("transformers")
+            self._tokenizer = transformers.AutoTokenizer.from_pretrained(
                 str(self.arch.directory), local_files_only=True
             )
         return self._tokenizer
@@ -133,7 +133,8 @@ class HFRunner:
             rows.append(out.logits[torch.arange(len(chunk)), last].float())
         return torch.cat(rows)
 
-    def accuracy(self, tensors: Tensors, suite: ProbeSuite) -> float:
+    def predict(self, tensors: Tensors, suite: ProbeSuite) -> tuple[list[int], list[int]]:
+        """Predicted and target token ids, one per example."""
         prompts, targets, candidates = self.encode(suite)
         logits = self.next_token_logits(tensors, prompts)
         target = torch.tensor(targets)
@@ -146,4 +147,30 @@ class HFRunner:
             predicted = choices[logits[:, choices].argmax(dim=1)]
         else:
             predicted = logits.argmax(dim=1)
-        return float((predicted == target).double().mean())
+        return predicted.tolist(), target.tolist()
+
+    def accuracy(self, tensors: Tensors, suite: ProbeSuite) -> float:
+        predicted, targets = self.predict(tensors, suite)
+        return sum(p == t for p, t in zip(predicted, targets, strict=True)) / len(targets)
+
+    def decode(self, token: int) -> str:
+        if not self.arch.has_tokenizer:
+            return f"<{token}>"
+        return str(self.tokenizer.decode([token]))
+
+    def encode_prompt(self, prompt: str | list[int]) -> list[int]:
+        return (
+            list(prompt) if isinstance(prompt, list) else list(self.tokenizer(prompt)["input_ids"])
+        )
+
+    def top_tokens(
+        self, tensors: Tensors, prompts: list[str | list[int]], k: int
+    ) -> list[list[tuple[int, float]]]:
+        """The ``k`` most likely next tokens after each prompt, with probabilities."""
+        logits = self.next_token_logits(tensors, [self.encode_prompt(p) for p in prompts])
+        probs = torch.softmax(logits.double(), dim=-1)
+        top = probs.topk(min(k, probs.shape[-1]), dim=-1)
+        return [
+            list(zip(ids.tolist(), values.tolist(), strict=True))
+            for ids, values in zip(top.indices, top.values, strict=True)
+        ]

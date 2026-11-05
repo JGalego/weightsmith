@@ -13,6 +13,7 @@ Building it needs the ``hf`` extra (``transformers``). Everything runs on CPU fr
 
 from __future__ import annotations
 
+import importlib
 import json
 import random
 import shutil
@@ -26,6 +27,12 @@ import torch.nn.functional as F
 from weightsmith.backends.pytorch.weights import Tensors, save_weights
 from weightsmith.models.hf import SIDE_FILES
 from weightsmith.models.manifest import WEIGHTS_FILE
+
+
+def _hf(module: str = "transformers") -> Any:
+    """Import an optional dependency untyped, so type checkers do not walk the whole library."""
+    return importlib.import_module(module)
+
 
 NUMBERS = [str(i) for i in range(24)]
 PAIRS = [
@@ -93,29 +100,45 @@ def probe_examples(task: str) -> list[Example]:
     return [_first(rng) for _ in range(64)]
 
 
+def split_examples(task: str, part: str) -> list[Example]:
+    """Disjoint practice ("train") and held-out ("test") probe sets for a task.
+
+    count splits on the parity of the number to predict, opposite on which side of each pair is
+    asked, and first draws two independent samples.
+    """
+    if task == "count":
+        return [e for e in probe_examples("count") if (int(e[1]) % 2 == 0) == (part == "train")]
+    if task == "opposite":
+        side = 0 if part == "train" else 1
+        return [(f"opposite : {pair[side]}", pair[1 - side]) for pair in PAIRS]
+    rng = random.Random(99 if part == "train" else 1234)
+    return [_first(rng) for _ in range(64)]
+
+
 def encode(prompt: str) -> list[int]:
     return [TOKEN["<bos>"]] + [TOKEN[w] for w in prompt.split()]
 
 
 def build_tokenizer(directory: Path) -> None:
     """Save a word-level tokenizer that prepends ``<bos>``, like Llama tokenizers do."""
-    from tokenizers import Tokenizer, models, pre_tokenizers, processors
-    from transformers import PreTrainedTokenizerFast
-
-    tok = Tokenizer(models.WordLevel(vocab=dict(TOKEN), unk_token="<unk>"))
-    tok.pre_tokenizer = pre_tokenizers.WhitespaceSplit()  # type: ignore[assignment]
-    tok.post_processor = processors.TemplateProcessing(  # type: ignore[assignment]
+    tokenizers = _hf("tokenizers")
+    models, pre_tokenizers, processors = (
+        tokenizers.models,
+        tokenizers.pre_tokenizers,
+        tokenizers.processors,
+    )
+    tok = tokenizers.Tokenizer(models.WordLevel(vocab=dict(TOKEN), unk_token="<unk>"))
+    tok.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tok.post_processor = processors.TemplateProcessing(
         single="<bos> $A", special_tokens=[("<bos>", TOKEN["<bos>"])]
     )
-    fast = PreTrainedTokenizerFast(
+    fast = _hf().PreTrainedTokenizerFast(
         tokenizer_object=tok, bos_token="<bos>", pad_token="<pad>", unk_token="<unk>"
     )
     fast.save_pretrained(str(directory))
 
 
 def config(**overrides: Any) -> Any:
-    from transformers import LlamaConfig
-
     settings: dict[str, Any] = {
         "vocab_size": len(VOCAB),
         "hidden_size": 64,
@@ -130,7 +153,7 @@ def config(**overrides: Any) -> Any:
         "eos_token_id": TOKEN["<bos>"],
     }
     settings.update(overrides)
-    return LlamaConfig(**settings)
+    return _hf().LlamaConfig(**settings)
 
 
 def _batch(
@@ -149,11 +172,9 @@ def _batch(
 
 
 def train_lm(seed: int, steps: int = 400, lr: float = 3e-3, init: Tensors | None = None) -> Tensors:
-    from transformers import LlamaForCausalLM
-
     torch.manual_seed(seed)
     rng = random.Random(seed)
-    model = LlamaForCausalLM(config())
+    model = _hf().LlamaForCausalLM(config())
     if init is not None:
         model.load_state_dict(init)
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -170,9 +191,7 @@ def train_lm(seed: int, steps: int = 400, lr: float = 3e-3, init: Tensors | None
 
 @torch.no_grad()
 def accuracy(tensors: Tensors) -> dict[str, float]:
-    from transformers import LlamaForCausalLM
-
-    model = LlamaForCausalLM(config())
+    model = _hf().LlamaForCausalLM(config())
     model.load_state_dict(tensors)
     model.eval()
     scores = {}
@@ -186,9 +205,7 @@ def accuracy(tensors: Tensors) -> dict[str, float]:
 @torch.no_grad()
 def neuron_task_influence(tensors: Tensors, layer: int) -> dict[str, torch.Tensor]:
     """Mean |contribution| of each MLP neuron of ``layer`` at the predicting position, per task."""
-    from transformers import LlamaForCausalLM
-
-    model = LlamaForCausalLM(config())
+    model = _hf().LlamaForCausalLM(config())
     model.load_state_dict(tensors)
     model.eval()
     captured: list[torch.Tensor] = []
@@ -254,13 +271,15 @@ def plant_head_gain(tensors: Tensors, layer: int, head: int, factor: float) -> T
     return out
 
 
-def probe_suite(task: str, description: str) -> dict[str, Any]:
+def probe_suite(
+    task: str, description: str, examples: list[Example] | None = None
+) -> dict[str, Any]:
     return {
         "format": "weightsmith.probes/v0",
         "kind": "tokens",
         "name": task,
         "description": description,
-        "examples": [{"prompt": p, "target": t} for p, t in probe_examples(task)],
+        "examples": [{"prompt": p, "target": t} for p, t in (examples or probe_examples(task))],
     }
 
 
@@ -310,6 +329,11 @@ def build_lm_fixtures(root: Path) -> dict[str, Any]:
     for task in TASKS:
         suite = probe_suite(task, DESCRIPTIONS[task])
         (base_dir / f"{task}.json").write_text(json.dumps(suite) + "\n", encoding="utf-8")
+        for part in ("train", "test"):
+            split = probe_suite(f"{task}_{part}", DESCRIPTIONS[task], split_examples(task, part))
+            (base_dir / f"{task}_{part}.json").write_text(
+                json.dumps(split) + "\n", encoding="utf-8"
+            )
     summary["tiny_llama"] = base_acc
 
     neurons = task_neurons(base, layer=0, task="count", k=2)

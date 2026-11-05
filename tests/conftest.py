@@ -27,6 +27,7 @@ def workspace(tmp_path: Path, fixtures_dir: Path) -> Path:
     """A directory holding copies of the example programs and a link to built fixtures."""
     for program in EXAMPLES.glob("*.wsm"):
         shutil.copy(program, tmp_path / program.name)
+    shutil.copytree(EXAMPLES / "editors", tmp_path / "editors")
     (tmp_path / "fixtures").symlink_to(fixtures_dir, target_is_directory=True)
     return tmp_path
 

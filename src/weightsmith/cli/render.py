@@ -135,6 +135,24 @@ def report(console: Console, rep: RunReport) -> None:
                 for limitation in finding.limitations:
                     console.print(f"    [dim]limitation: {escape(limitation)}[/]")
 
+    for record in rep.delegations:
+        console.print(
+            f"[bold]Editor {escape(record['editor'])}[/] ({record['provider']}"
+            + (f", {escape(str(record['model']))}" if record.get("model") else "")
+            + (", replayed" if record.get("replayed") else "")
+            + f"): {record['turns']} turn(s), {record['tool_calls']} tool call(s)"
+            + (f", {record['failed_tool_calls']} failed" if record["failed_tool_calls"] else "")
+            + f", stopped: {escape(record['stop'])}"
+        )
+        if record["input_tokens"] or record["output_tokens"]:
+            console.print(
+                f"  [dim]tokens: {record['input_tokens']} in, {record['output_tokens']} out[/]"
+            )
+        if record["final_message"]:
+            console.print(
+                f"  [dim]editor's account (a hypothesis):[/] {escape(record['final_message'])}"
+            )
+
     if "evaluation" in shown and rep.verdicts:
         table = Table(title="Verification", title_justify="left")
         table.add_column("contract item")

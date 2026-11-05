@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from weightsmith.compiler.effects import Effect
 from weightsmith.compiler.types import (
     BOOL,
     FLOAT,
     FRACTION,
     INT,
     STRING,
+    BehaviorType,
     ListType,
     SymbolType,
     Type,
@@ -30,6 +32,7 @@ class ParamSpec:
     default: object = None
     minimum: float | None = None
     maximum: float | None = None
+    choices: tuple[str, ...] | None = None  # for String parameters with a fixed set of values
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +319,153 @@ CLAUSES: dict[str, Entry] = {
     ),
 }
 
+
+@dataclass(frozen=True, slots=True)
+class ProviderSpec(Entry):
+    """A provider of editor models. ``extra`` names the optional dependency it needs."""
+
+    extra: str | None = None
+
+
+PROVIDERS: dict[str, ProviderSpec] = {
+    p.name: p
+    for p in [
+        ProviderSpec(
+            "anthropic",
+            "Claude models through the Anthropic API. Credentials come from the environment "
+            "(ANTHROPIC_API_KEY or an 'ant auth login' profile), never from the program.",
+            (
+                _p("model", STRING, "Model ID.", default="claude-opus-5-5"),
+                _p(
+                    "effort",
+                    STRING,
+                    "Reasoning effort.",
+                    default="high",
+                    choices=("low", "medium", "high", "xhigh", "max"),
+                ),
+                _p("max_tokens", INT, "Output token limit per call.", default=64000, minimum=1),
+            ),
+            extra="anthropic",
+        ),
+        ProviderSpec(
+            "openai",
+            "Models behind the OpenAI Chat Completions API, including local servers that speak "
+            "it (base_url). Credentials come from the environment (OPENAI_API_KEY).",
+            (
+                _p("model", STRING, "Model ID.", required=True),
+                _p("base_url", STRING, "API endpoint, for example a local server."),
+                _p("max_tokens", INT, "Output token limit per call.", default=16000, minimum=1),
+                _p(
+                    "reasoning_effort",
+                    STRING,
+                    "Reasoning effort, for models that support it.",
+                    choices=("minimal", "low", "medium", "high"),
+                ),
+            ),
+            extra="openai",
+        ),
+        ProviderSpec(
+            "scripted",
+            "A deterministic editor that replays a JSON script of tool calls. For tests and for "
+            "re-applying a published sequence of edits without a model.",
+            (_p("script", STRING, "Path of the script, relative to the program.", required=True),),
+        ),
+    ]
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpec(Entry):
+    """A tool an editor can call during ``delegate``. ``effects`` are what the tool performs."""
+
+    effects: frozenset[Effect] = field(default_factory=frozenset)
+
+
+TOOLS: dict[str, ToolSpec] = {
+    t.name: t
+    for t in [
+        ToolSpec(
+            "describe",
+            "The target's tensors, architecture profile, remaining budgets and the practice "
+            "behaviours.",
+            effects=frozenset({Effect.INSPECT}),
+        ),
+        ToolSpec(
+            "read_weights",
+            "Values of a selection as text, up to max_read numbers per call.",
+            effects=frozenset({Effect.INSPECT}),
+        ),
+        ToolSpec(
+            "stats",
+            "Per-tensor statistics of a selection.",
+            effects=frozenset({Effect.INSPECT}),
+        ),
+        ToolSpec(
+            "find",
+            "Run a finder on the working copy and return its findings.",
+            effects=frozenset({Effect.INSPECT}),
+        ),
+        ToolSpec(
+            "run_probes",
+            "Measure a practice behaviour on the working copy, with some failing examples. "
+            "Costs one forward pass per example.",
+            effects=frozenset({Effect.PROBE}),
+        ),
+        ToolSpec(
+            "forward",
+            "Run the working copy on inputs the editor writes: the most likely next tokens for "
+            "a language model, the outputs for a vector model. Costs one forward pass per input.",
+            effects=frozenset({Effect.PROBE}),
+        ),
+        ToolSpec(
+            "edit",
+            "Apply an edit operation (zero, scale, fill, ...) to a selection.",
+            effects=frozenset({Effect.MUTATE}),
+        ),
+        ToolSpec(
+            "set_weights",
+            "Write explicit values into a selection.",
+            effects=frozenset({Effect.MUTATE}),
+        ),
+        ToolSpec(
+            "undo",
+            "Revert the editor's most recent change.",
+            effects=frozenset({Effect.MUTATE}),
+        ),
+        ToolSpec(
+            "python",
+            "Run Python (numpy, torch) on a copy of the weights in a separate process. Changed "
+            "arrays are proposed as edits and need the mutate effect. Not a security boundary.",
+            effects=frozenset({Effect.EXECUTE}),
+        ),
+    ]
+}
+
+DELEGATE_PARAMS: tuple[ParamSpec, ...] = (
+    _p("task", STRING, "What the editor should do."),
+    _p("task_file", STRING, "A text file with the task, relative to the program."),
+    _p(
+        "tools",
+        ListType(SymbolType("tool")),
+        "Tools the editor may call.",
+        default=("describe", "read_weights", "stats"),
+    ),
+    _p(
+        "practice",
+        ListType(BehaviorType()),
+        "Behaviours the editor may measure. Keep them apart from the ones the contract verifies.",
+        default=(),
+    ),
+    _p("max_steps", INT, "Most editor turns.", default=20, minimum=1),
+    _p("max_read", INT, "Most numbers one read returns.", default=20000, minimum=1),
+    _p(
+        "include_weights",
+        BOOL,
+        "Put every weight, as text, in the first message (for small networks).",
+        default=False,
+    ),
+)
+
 BEHAVIOR_PARAMS: tuple[ParamSpec, ...] = (
     _p("metric", SymbolType("metric"), "Metric computed over the probe suite.", required=True),
 )
@@ -324,6 +474,7 @@ SYMBOL_REGISTRIES: dict[str, dict[str, Entry]] = {
     "finder": FINDERS,  # type: ignore[dict-item]
     "metric": METRICS,  # type: ignore[dict-item]
     "strategy": STRATEGIES,  # type: ignore[dict-item]
+    "tool": TOOLS,  # type: ignore[dict-item]
 }
 
 REPAIR_PARAMS: tuple[ParamSpec, ...] = (
@@ -349,14 +500,17 @@ __all__ = [
     "BOOL",
     "CLAUSES",
     "COMPOSE_OPS",
+    "DELEGATE_PARAMS",
     "EDIT_OPS",
     "FINDERS",
     "METRICS",
     "OUTPUTS",
+    "PROVIDERS",
     "REPAIR_PARAMS",
     "REQUIREMENTS",
     "STRATEGIES",
     "STRING",
     "STRUCTURAL_FINDERS",
     "SYMBOL_REGISTRIES",
+    "TOOLS",
 ]

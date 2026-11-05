@@ -39,7 +39,7 @@ No gradient descent was used. The original model file is untouched. The patch is
 > [!WARNING]
 > Weightsmith is pre-alpha. The language, its standard strategies and the Python API will change without notice.
 >
-> **Status: 0.2.** The language core, compiler, effect system, PyTorch backend, patches and verification work end to end on small CPU models, including Hugging Face language models addressed by role (`M.layers[1].attn.heads[2]`). Semantic operations such as "find the reasoning circuit" do not exist yet, and the compiler says so rather than pretending. See [docs/vision.md](docs/vision.md).
+> **Status: unreleased.** The language core, compiler, effect system, PyTorch backend, patches and verification work end to end on small CPU models, including Hugging Face language models addressed by role (`M.layers[1].attn.heads[2]`). A language model such as Claude can act as the editor through `delegate`, under the same budgets and verification, with every exchange recorded and replayable. Semantic operations such as "find the reasoning circuit" do not exist yet, and the compiler says so rather than pretending. See [docs/vision.md](docs/vision.md).
 
 ## Why a language
 
@@ -58,7 +58,7 @@ uv sync                      # installs CPU-only PyTorch from the PyTorch index
 uv run weightsmith --version
 ```
 
-Running Hugging Face models needs the `hf` extra (`pip install 'weightsmith[hf]'`, which adds `transformers`). The development environment that `uv sync` creates already includes it. Checking programs never needs it.
+Running Hugging Face models needs the `hf` extra (`pip install 'weightsmith[hf]'`, which adds `transformers`). Language-model editors need the `anthropic` or `openai` extra. The development environment that `uv sync` creates includes all three. Checking programs never needs them.
 
 ## Quick start
 
@@ -82,6 +82,8 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | [merge_unrelated.wsm](examples/merge_unrelated.wsm) | The same merge with an independently trained model | Verification **fails** (exit code 3), as it should |
 | [prune_mlp.wsm](examples/prune_mlp.wsm) | Imperative `edit`: magnitude pruning and zeroing a slice | Behaviours preserved; 17% of parameters changed |
 | [repair_tiny_llama.wsm](examples/repair_tiny_llama.wsm) | A Hugging Face Llama-style model with two amplified MLP neurons; `find outlier_neurons`, `repair`, next-token probes | Finds exactly the planted neurons; `count` rises from 0.70 to 1.00, the other tasks are preserved; 0.2% of parameters changed |
+| [repair_with_editor.wsm](examples/repair_with_editor.wsm) | `delegate`: an editor repairs the model through tools (here a deterministic script that writes Python), practising on `*_train` probes; the contract verifies on disjoint `*_test` probes | All contract items verified; replays exactly with `--replay` |
+| [repair_with_claude.wsm](examples/repair_with_claude.wsm) | The same task given to Claude, with only "one task is broken" as a hint. Calls the Anthropic API and costs money | Whatever Claude achieves, verified the same way |
 | [head_surgery.wsm](examples/head_surgery.wsm) | Editing by role: zero one attention head, transplant a key/value head from a fine-tuned donor | All three behaviours preserved; 3.1% of parameters changed |
 
 ## Language at a glance
@@ -98,8 +100,10 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | Edit | `edit { prune_magnitude s (fraction = 20%)  zero s[3, :] }` |
 | Compose | `compose { interpolate Donor (alpha = 0.5)  transplant Donor.params["layers.1.*"] }` |
 | Repair | `repair (strategies = [rescale_outlier_rows])` |
+| Declare an editor | `editor Claude = provider("anthropic", model = "claude-opus-5-5")` |
+| Delegate to it | `delegate Claude (task = "...", tools = [describe, run_probes, edit, python], practice = [b_train])` |
 | Contract and verify | `contract { improve b (min_delta = 0.1)  preserve c (tolerance = 0.02) }` then `verify` |
-| Policy | `policy { allow probe(max_forward_passes = 500)  allow mutate(max_changed_params = 5%) }` |
+| Policy | `policy { allow probe(max_forward_passes = 500)  allow mutate(max_changed_params = 5%)  allow reason(max_calls = 20) }` |
 | Output | `output { model, patch, findings, evidence, evaluation, summary }` |
 
 The full definition is in [docs/semantics.md](docs/semantics.md).
@@ -129,7 +133,7 @@ source (.wsm)
 | `evaluation` | Probe suites, verdict semantics, run reports |
 | `artifacts` | Patch manifest schema, provenance |
 | `evidence` | Findings, evidence levels |
-| `reasoning` | Interface for optional reasoning providers; none ships in 0.1 |
+| `reasoning` | Editors: Anthropic, OpenAI-compatible and scripted providers; recording and exact replay |
 | `synthetic`, `synthetic_lm` | Fixture models with planted defects and known ground truth, including a tiny Llama-style language model |
 
 ## Command line
@@ -138,7 +142,7 @@ source (.wsm)
 |---|---|
 | `weightsmith check FILE` | Syntax, names, types and effects; never imports PyTorch |
 | `weightsmith compile FILE [-o out.json] [--text]` | Emit IR as JSON or readable text |
-| `weightsmith run FILE [--out DIR] [--dry-run] [--json]` | Run a `.wsm` program or compiled IR |
+| `weightsmith run FILE [--out DIR] [--dry-run] [--replay DIR] [--json]` | Run a `.wsm` program or compiled IR; `--replay` answers editors from recorded transcripts |
 | `weightsmith inspect PATH` | Statistics, architecture profile and structural findings for a weight file or model directory |
 | `weightsmith diff A B [--out DIR]` | Compare two weight sets; optionally save a patch |
 | `weightsmith apply BASE PATCH --out DIR [--reverse]` | Apply or revert a patch, checking hashes |
@@ -160,7 +164,8 @@ uv run pyright
 - Runnable models are sequential `arch.json` networks or Hugging Face causal language models. Roles exist for the GPT-2 and Llama families only; other models are addressed by parameter name.
 - Finders are structural statistics. They locate anomalies in weights, not capabilities, circuits or features.
 - Behaviours are classification or next-token probe suites with an accuracy metric. There is no generation, sampling or benchmark harness yet.
-- No reasoning provider ships: a language model cannot yet act as the editor.
+- Editors are measured only by probe suites: there are no game rollouts or sampled benchmarks such as MATH-500 yet, which several published weight-space programming experiments need.
+- The `python` tool is not a sandbox in the security sense: editor code runs as you, without credentials and with a time limit.
 - Verdicts hold for the declared probe suite only. No confidence intervals are computed.
 - Patches store replacement values, so a dense patch is about twice the size of the tensors it changes.
 - Interpolating unrelated networks fails without permutation alignment, and Weightsmith does not align them.

@@ -111,6 +111,13 @@ def run(
         bool, typer.Option("--overwrite", help="Allow a non-empty output directory.")
     ] = False,
     seed: Annotated[int, typer.Option("--seed", help="Seed recorded in provenance.")] = 0,
+    replay: Annotated[
+        Path | None,
+        typer.Option(
+            "--replay",
+            help="Replay editors from the transcripts in this directory instead of calling them.",
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the report as JSON.")] = False,
 ) -> None:
     """Run a program. Exit codes: 0 ok, 1 invalid program, 2 runtime error or budget stop,
@@ -136,7 +143,9 @@ def run(
     from weightsmith.runtime.context import RunOptions
     from weightsmith.runtime.executor import execute
 
-    options = RunOptions(out_dir=out, dry_run=dry_run, overwrite=overwrite, seed=seed)
+    options = RunOptions(
+        out_dir=out, replay=replay, dry_run=dry_run, overwrite=overwrite, seed=seed
+    )
     rep = execute(ir, PyTorchBackend(), options)
     if as_json:
         typer.echo(rep.to_json())

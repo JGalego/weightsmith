@@ -24,6 +24,7 @@ from weightsmith.compiler.types import (
     INT,
     STRING,
     BehaviorType,
+    EditorType,
     ListType,
     ParamsType,
     Prim,
@@ -55,7 +56,7 @@ from weightsmith.models.profiles import (
 @dataclass(slots=True)
 class Binding:
     name: str
-    kind: str  # "model" | "weights" | "behavior" | "selection"
+    kind: str  # "model" | "weights" | "behavior" | "selection" | "editor"
     type: Type
     span: Span
     path: Path | None = None
@@ -157,7 +158,7 @@ class Checker:
     def check(self) -> CheckedFile:
         decls = self.file.decls
         for decl in decls:
-            if isinstance(decl, n.LoadDecl | n.BehaviorDecl | n.SelectionDecl):
+            if isinstance(decl, n.LoadDecl | n.BehaviorDecl | n.SelectionDecl | n.EditorDecl):
                 self._declare(decl)
         for decl in decls:
             match decl:
@@ -165,6 +166,8 @@ class Checker:
                     self._check_load(decl)
                 case n.BehaviorDecl():
                     self._check_behavior(decl)
+                case n.EditorDecl():
+                    self._check_editor(decl)
         for decl in decls:
             if isinstance(decl, n.SelectionDecl):
                 binding = self.bindings[decl.name.name]
@@ -207,7 +210,7 @@ class Checker:
         roles = {k: (r.binding, r.ref) for k, r in self._roles.items() if isinstance(r, _Role)}
         return CheckedFile(self.file, self.base_dir, self.bindings, file_policy, programs, roles)
 
-    def _declare(self, decl: n.LoadDecl | n.BehaviorDecl | n.SelectionDecl) -> None:
+    def _declare(self, decl: n.LoadDecl | n.BehaviorDecl | n.SelectionDecl | n.EditorDecl) -> None:
         name = decl.name
         if name.name in self.bindings:
             self.name_error(
@@ -225,6 +228,8 @@ class Checker:
                 typ, kind = BehaviorType(), "behavior"
             case n.SelectionDecl():
                 typ, kind = SelectionType("?", sliced=False), "selection"
+            case n.EditorDecl():
+                typ, kind = EditorType(), "editor"
         self.bindings[name.name] = Binding(
             name.name, kind, typ, name.span, expr=getattr(decl, "expr", None)
         )
@@ -307,6 +312,38 @@ class Checker:
             binding.suite = load_probe_suite(path)
         except LoadError as exc:
             self.type_error("E308", str(exc), decl.path.span)
+
+    def _check_editor(self, decl: n.EditorDecl) -> None:
+        binding = self.bindings.get(decl.name.name)
+        if binding is None or binding.span != decl.name.span:
+            return
+        name = decl.provider.value
+        spec = reg.PROVIDERS.get(name)
+        if spec is None:
+            self.name_error(
+                "E210",
+                f"unknown provider '{name}'",
+                decl.provider.span,
+                *_suggest(name, list(reg.PROVIDERS)),
+                _available("providers", reg.PROVIDERS),
+            )
+            return
+        for kwarg in decl.kwargs:
+            if "key" in kwarg.name.name or "token" in kwarg.name.name:
+                self.type_error(
+                    "E364",
+                    "credentials do not belong in a program",
+                    kwarg.span,
+                    "providers read them from the environment, for example ANTHROPIC_API_KEY",
+                )
+                return
+        values = self.check_kwargs(decl.kwargs, spec.params, f"provider {name}", decl.span)
+        if name == "scripted" and isinstance(values.get("script"), str):
+            script = self._resolve_path(n.StrLit(values["script"], span=decl.span))
+            values["script"] = str(script)
+            if not script.is_file():
+                self.warn("W204", f"script '{script}' does not exist yet", decl.provider.span)
+        binding.params = {"provider": name, **values}
 
     # expressions --------------------------------------------------------------------------
     def lookup(self, name: str, span: Span, env: dict[str, Binding]) -> Binding | None:
@@ -679,6 +716,25 @@ class Checker:
 
     def _kwarg_value(self, expr: n.Expr, spec: reg.ParamSpec, where: str) -> Any:
         expected = spec.type
+        if isinstance(expected, ListType) and isinstance(expected.elem, BehaviorType):
+            if not isinstance(expr, n.ListLit):
+                self.type_error("E323", f"'{spec.name}' expects a list of behaviours", expr.span)
+                return None
+            names: list[str] = []
+            for item in expr.items:
+                if not isinstance(item, n.Name):
+                    self.type_error("E328", "expected a behaviour name", item.span)
+                    return None
+                binding = self.lookup(item.ident, item.span, self.bindings)
+                if binding is None:
+                    return None
+                if binding.kind != "behavior":
+                    self.type_error(
+                        "E351", f"'{item.ident}' is {binding.type}, not a behaviour", item.span
+                    )
+                    return None
+                names.append(item.ident)
+            return tuple(names)
         if isinstance(expected, SymbolType):
             return self._symbol(expr, expected.registry)
         if isinstance(expected, ListType) and isinstance(expected.elem, SymbolType):
@@ -725,6 +781,13 @@ class Checker:
                 return None
             if expected in (FLOAT, FRACTION):
                 value = float(value)
+        if spec.choices is not None and value not in spec.choices:
+            self.type_error(
+                "E329",
+                f"'{spec.name}' must be one of {', '.join(spec.choices)}",
+                expr.span,
+            )
+            return None
         return value
 
     def _symbol(self, expr: n.Expr, registry: str) -> str | None:
@@ -837,6 +900,8 @@ class Checker:
             case n.ComposeBlock():
                 for op in stmt.ops:
                     self._check_compose_op(op, env, state, checked)
+            case n.DelegateStmt():
+                self._check_delegate(stmt, state, checked)
             case n.RepairStmt():
                 values = self.check_kwargs(stmt.kwargs, reg.REPAIR_PARAMS, "repair", stmt.span)
                 checked.kwargs[id(stmt)] = values
@@ -869,6 +934,59 @@ class Checker:
                 self._check_output(stmt, state)
             case n.ContractBlock() | n.PolicyBlock():
                 pass  # checked at program level
+
+    def _check_delegate(
+        self, stmt: n.DelegateStmt, state: _ProgramState, checked: CheckedProgram
+    ) -> None:
+        editor = self.lookup(stmt.editor.name, stmt.editor.span, self.bindings)
+        values = self.check_kwargs(stmt.kwargs, reg.DELEGATE_PARAMS, "delegate", stmt.span)
+        checked.kwargs[id(stmt)] = values
+        if editor is not None and editor.kind != "editor":
+            self.type_error(
+                "E360",
+                f"delegate takes an editor, but '{editor.name}' is {editor.type}",
+                stmt.editor.span,
+                'declare one with: editor E = provider("anthropic")',
+            )
+        if ("task" in values) == ("task_file" in values):
+            self.type_error("E361", "give exactly one of 'task' and 'task_file'", stmt.span)
+        elif "task_file" in values:
+            path = self._resolve_path(n.StrLit(values.pop("task_file"), span=stmt.span))
+            try:
+                values["task"] = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                self.type_error("E363", f"cannot read the task file: {exc}", stmt.span)
+        tools = set(values.get("tools", ()))
+        target = state.target
+        runs = tools & {"run_probes", "forward"} or values.get("practice")
+        if runs and not target.type.is_model:  # type: ignore[union-attr]
+            self.type_error(
+                "E362",
+                f"running the network needs a model, but '{target.name}' was loaded with 'weights'",
+                stmt.span,
+            )
+        practice = values.get("practice", ())
+        if practice and "run_probes" not in tools:
+            self.warn("W307", "practice behaviours are only measured through run_probes", stmt.span)
+        for name in practice:
+            behavior = self.bindings[name]
+            if target.type.is_model:  # type: ignore[union-attr]
+                self._check_suite_fits(behavior, target, stmt.span, {"min_n": 1})
+        verified = {
+            item.subject.name
+            for item in (checked.contract.items if checked.contract else ())
+            if item.clause in ("improve", "preserve")
+        }
+        for name in sorted(verified & set(practice)):
+            self.warn(
+                "W306",
+                f"the editor practises on '{name}', which the contract also verifies; the "
+                "verdict will not be independent of the editor's search",
+                stmt.span,
+                "verify on a held-out probe suite instead",
+            )
+        if tools & {"edit", "set_weights", "undo", "python"}:
+            state.mutated = True
 
     def _check_find(
         self,

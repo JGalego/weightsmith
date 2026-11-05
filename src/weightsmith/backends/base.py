@@ -94,6 +94,32 @@ class Backend(Protocol):
     def changed_params(self, before: Tensors, after: Tensors) -> dict[str, int]: ...
     def nonfinite(self, tensors: Tensors) -> int: ...
 
+    # for editors (the delegate statement)
+    def examples(
+        self, arch: Architecture, tensors: Tensors, suite: ProbeSuite
+    ) -> list[dict[str, Any]]:
+        """Each probe example with the model's prediction and whether it is correct."""
+        ...
+
+    def run_inputs(
+        self,
+        arch: Architecture,
+        tensors: Tensors,
+        prompts: list[str | list[int]] | None = None,
+        inputs: list[list[float]] | None = None,
+        top_k: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Outputs for inputs an editor wrote."""
+        ...
+
+    def region_values(self, tensors: Tensors, regions: list[Region]) -> list[dict[str, Any]]:
+        """Values of each region as labelled rows, for reading weights as text."""
+        ...
+
+    def assign(self, tensors: Tensors, regions: list[Region], values: list[float]) -> Tensors:
+        """Write values into regions in row-major order; return the changed tensors."""
+        ...
+
     # artifacts
     def save_weights(self, tensors: Tensors, path: Path, metadata: dict[str, str]) -> None: ...
     def write_patch(

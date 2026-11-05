@@ -104,6 +104,8 @@ class _Lowerer:
                 case n.RepairStmt():
                     strategies = tuple(self.kwargs(stmt).get("strategies", ()))
                     self.ops.append(ir.Repair(strategies, span=stmt.span))
+                case n.DelegateStmt():
+                    self.ops.append(self.delegate(stmt))
                 case n.VerifyStmt():
                     self.ops.append(ir.Verify(contract_items, span=stmt.span))
                 case n.OutputBlock():
@@ -120,6 +122,24 @@ class _Lowerer:
             ops=tuple(self.ops),
             probe_sizes=self.probe_sizes,
             span=program.span,
+        )
+
+    def delegate(self, stmt: n.DelegateStmt) -> ir.Delegate:
+        values = self.kwargs(stmt)
+        editor = self.env[stmt.editor.name]
+        settings = dict(editor.params)
+        provider = str(settings.pop("provider"))
+        practice = tuple(self.load(self.file.bindings[b]) for b in values.get("practice", ()))
+        params = {k: values[k] for k in ("max_steps", "max_read", "include_weights") if k in values}
+        return ir.Delegate(
+            editor.name,
+            provider,
+            settings,
+            str(values.get("task", "")),
+            tuple(values.get("tools", ())),
+            practice,
+            params,
+            span=stmt.span,
         )
 
     def contract(self) -> tuple[ir.ContractItem, ...]:

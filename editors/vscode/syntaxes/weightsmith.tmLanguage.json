@@ -67,7 +67,7 @@
           }
         },
         {
-          "match": "\\b(model|weights|behavior|selection|let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(model|weights|behavior|selection|editor|let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "storage.type.weightsmith"
@@ -94,11 +94,11 @@
       "patterns": [
         {
           "name": "storage.type.weightsmith",
-          "match": "\\b(?:model|weights|behavior|selection|program|let)\\b"
+          "match": "\\b(?:model|weights|behavior|selection|editor|program|let)\\b"
         },
         {
           "name": "keyword.control.weightsmith",
-          "match": "\\b(?:policy|target|inspect|find|in|edit|compose|repair|contract|verify|output)\\b"
+          "match": "\\b(?:policy|target|inspect|find|in|edit|compose|repair|delegate|contract|verify|output)\\b"
         },
         {
           "name": "keyword.other.rule.weightsmith",
@@ -159,7 +159,7 @@
     },
     "builtin": {
       "name": "support.function.builtin.weightsmith",
-      "match": "\\b(?:accuracy|anomalies|changed_params|dead_rows|duplicate_tensors|evaluation|evidence|fill|findings|finite|interpolate|load|low_effective_rank|low_rank|mutate|nan_inf|outlier_heads|outlier_neurons|outlier_rows|outlier_tensors|patch|probe|probes|prune_magnitude|reason|replace_nonfinite|rescale_outlier_rows|rescale_outlier_units|save|scale|summary|train|transplant|zero|zero_tensors)\\b"
+      "match": "\\b(?:accuracy|anomalies|anthropic|changed_params|dead_rows|describe|duplicate_tensors|evaluation|evidence|execute|fill|findings|finite|forward|interpolate|load|low_effective_rank|low_rank|mutate|nan_inf|openai|outlier_heads|outlier_neurons|outlier_rows|outlier_tensors|patch|probe|probes|provider|prune_magnitude|python|read_weights|reason|replace_nonfinite|rescale_outlier_rows|rescale_outlier_units|run_probes|save|scale|scripted|set_weights|stats|summary|train|transplant|undo|zero|zero_tensors)\\b"
     },
     "punctuation": {
       "patterns": [

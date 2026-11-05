@@ -20,6 +20,8 @@ NAMES = [
     *registry.METRICS,
     *registry.REQUIREMENTS,
     *registry.OUTPUTS,
+    *registry.PROVIDERS,
+    *registry.TOOLS,
     *(e.value for e in Effect),
 ]
 

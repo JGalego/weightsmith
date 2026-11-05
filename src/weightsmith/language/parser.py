@@ -71,6 +71,12 @@ class _ToAst(Transformer[Token, n.SourceFile]):
             self._ident(name), self._string(path), tuple(kwargs), span=self._s(meta)
         )
 
+    def editor_decl(self, meta: Meta, children: list[Any]) -> n.EditorDecl:
+        name, provider, *kwargs = children
+        return n.EditorDecl(
+            self._ident(name), self._string(provider), tuple(kwargs), span=self._s(meta)
+        )
+
     def selection_decl(self, meta: Meta, children: list[Any]) -> n.SelectionDecl:
         name, expr = children
         return n.SelectionDecl(self._ident(name), expr, span=self._s(meta))
@@ -115,6 +121,10 @@ class _ToAst(Transformer[Token, n.SourceFile]):
     def repair_stmt(self, meta: Meta, children: list[Any]) -> n.RepairStmt:
         _, kwargs = self._split_optional(children)
         return n.RepairStmt(kwargs, span=self._s(meta))
+
+    def delegate_stmt(self, meta: Meta, children: list[Any]) -> n.DelegateStmt:
+        rest, kwargs = self._split_optional(children)
+        return n.DelegateStmt(self._ident(rest[0]), kwargs, span=self._s(meta))
 
     def contract_block(self, meta: Meta, children: list[Any]) -> n.ContractBlock:
         return n.ContractBlock(tuple(children), span=self._s(meta))
