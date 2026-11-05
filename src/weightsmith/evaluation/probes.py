@@ -57,30 +57,59 @@ class TokenExample(BaseModel):
         return self.prompt is not None or self.target is not None
 
 
+class Rollouts(BaseModel):
+    """Episodes of a policy network in a simulated environment, for a ``kind: "rollouts"`` suite.
+
+    The episodes are run by a worker in its own environment (``weightsmith.evaluation.rollouts``).
+    ``seed`` fixes the stream of episodes, so two suites with different seeds measure on different
+    episodes. ``mode`` is how actions are chosen: sampled from the policy, or the most likely.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    env: Literal["kinetix"]
+    level: str
+    episodes: int = Field(ge=1)
+    seed: int = 0
+    mode: Literal["sample", "argmax"] = "sample"
+
+
 class ProbeSuite(BaseModel):
     """A probe suite: the finite, declared evidence base of a behaviour.
 
     ``kind: "vectors"`` (the default) is classification over input vectors; ``output_slice``
     selects the logits the metric reads. ``kind: "tokens"`` is next-token prediction for language
     models; ``candidates`` (or ``candidate_ids``) optionally restricts the prediction to a set of
-    tokens, which makes the suite a multiple-choice test.
+    tokens, which makes the suite a multiple-choice test. ``kind: "rollouts"`` has no examples:
+    it is a number of episodes of a policy network in an environment, each one a probe.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     format: str = PROBE_FORMAT
-    kind: Literal["vectors", "tokens"] = "vectors"
+    kind: Literal["vectors", "tokens", "rollouts"] = "vectors"
     name: str
     description: str = ""
     output_slice: tuple[int, int] | None = None
     candidates: list[str] | None = Field(default=None, min_length=2)
     candidate_ids: list[int] | None = Field(default=None, min_length=2)
-    examples: list[ProbeExample | TokenExample] = Field(min_length=1)
+    examples: list[ProbeExample | TokenExample] = Field(default_factory=list)
+    rollouts: Rollouts | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> ProbeSuite:
         if self.format != PROBE_FORMAT:
             raise ValueError(f"unsupported probe format '{self.format}', expected {PROBE_FORMAT}")
+        if self.kind == "rollouts":
+            if self.rollouts is None or self.examples:
+                raise ValueError("a 'rollouts' suite has a 'rollouts' entry and no examples")
+            if self.output_slice is not None or self.candidates or self.candidate_ids:
+                raise ValueError("output_slice and candidates do not apply to 'rollouts' suites")
+            return self
+        if self.rollouts is not None:
+            raise ValueError("'rollouts' applies to 'rollouts' suites only")
+        if not self.examples:
+            raise ValueError("a suite needs at least one example")
         wanted = ProbeExample if self.kind == "vectors" else TokenExample
         if any(not isinstance(e, wanted) for e in self.examples):
             fields = "'input' and 'label'" if self.kind == "vectors" else "a prompt and a target"
@@ -130,6 +159,8 @@ class ProbeSuite(BaseModel):
 
     @property
     def n(self) -> int:
+        if self.rollouts is not None:
+            return self.rollouts.episodes
         return len(self.examples)
 
 

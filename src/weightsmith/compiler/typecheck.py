@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from weightsmith import registry as reg
-from weightsmith.compiler.effects import Policy, effective_policy, policy_from_block
+from weightsmith.compiler.effects import Effect, Policy, effective_policy, policy_from_block
 from weightsmith.compiler.ir import IndexSpec, Region
 from weightsmith.compiler.types import (
     BOOL,
@@ -1010,6 +1010,14 @@ class Checker:
                     stmt.span,
                     f"tools available as blocks: {', '.join(sorted(reg.BLOCK_TOOLS)) or 'none'}",
                 )
+        written = sorted(set(tools_given) & reg.BLOCK_TOOLS)
+        if values.get("protocol", "tools") == "tools" and written:
+            self.type_error(
+                "E370",
+                f"the tools {', '.join(written)} are written as blocks, not called",
+                stmt.span,
+                'use protocol = "blocks"',
+            )
         tools = set(values.get("tools", ()))
         target = state.target
         runs = tools & {"run_probes", "forward"} or values.get("practice")
@@ -1039,7 +1047,9 @@ class Checker:
                 stmt.span,
                 "verify on a held-out probe suite instead",
             )
-        if tools & {"edit", "set_weights", "undo", "python"}:
+        # The python tool changes weights by proposing edits, so it mutates too.
+        writers = {t for t in tools if t in reg.TOOLS and Effect.MUTATE in reg.TOOLS[t].effects}
+        if writers or "python" in tools:
             state.mutated = True
 
     def _check_find(
@@ -1323,6 +1333,22 @@ class Checker:
         suite = behavior.suite
         if suite is None:
             return
+        metric = (behavior.params or {}).get("metric")
+        if (suite.kind == "rollouts") != (metric == "success"):
+            self.type_error(
+                "E515",
+                f"probe suite '{behavior.name}' is a '{suite.kind}' suite, which metric "
+                f"{metric} cannot measure",
+                span,
+                "'rollouts' suites are measured by success, other suites by accuracy",
+            )
+        if suite.kind == "rollouts" and target.arch is None:
+            self.type_error(
+                "E512",
+                f"probe suite '{behavior.name}' runs episodes of a policy network, but "
+                f"'{target.name}' has no arch.json",
+                span,
+            )
         if suite.kind == "tokens" and target.arch is not None:
             self.type_error(
                 "E512",

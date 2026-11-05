@@ -267,6 +267,11 @@ METRICS: dict[str, MetricSpec] = {
         "(among the candidates, if given) is the target.",
         higher_is_better=True,
     ),
+    "success": MetricSpec(
+        "success",
+        "Fraction of episodes that end in success, for a 'rollouts' suite.",
+        higher_is_better=True,
+    ),
 }
 
 REQUIREMENTS: dict[str, RequirementSpec] = {
@@ -457,11 +462,18 @@ TOOLS: dict[str, ToolSpec] = {
             "arrays are proposed as edits and need the mutate effect. Not a security boundary.",
             effects=frozenset({Effect.EXECUTE}),
         ),
+        ToolSpec(
+            "edits",
+            'Write weight edits as numbers, in an edits block (protocol "blocks" only): '
+            "statements such as 'actor0.W[6, 0:3] = [1, 2, 3]', '*=', '+=', '-=' and "
+            "'ZERO t', on the tensors as the weight view names and shows them.",
+            effects=frozenset({Effect.MUTATE}),
+        ),
     ]
 }
 
 # Tools an editor can use under protocol = "blocks", by writing a fenced block of that name.
-BLOCK_TOOLS: frozenset[str] = frozenset()
+BLOCK_TOOLS: frozenset[str] = frozenset({"edits"})
 
 DELEGATE_PARAMS: tuple[ParamSpec, ...] = (
     _p("task", STRING, "What the editor should do."),

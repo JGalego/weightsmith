@@ -12,9 +12,16 @@ This script downloads that repository at a fixed commit into ``fixtures/logs`` a
 * ``which_game/message.txt``: the article's prompt with ``{{weights}}`` where the weights go, and
   ``which_game/instructions.md``, its one-line system instructions;
 * ``which_game/article/<id>.json``: Astra's recorded answers as editor scripts, to check the
-  programs offline.
+  programs offline;
+* ``fix_car/shown/``: the car policy of Experiment 4 (Kinetix actor, 679 -> 128 -> 5 x 128 -> 16)
+  as Astra was shown it, every tensor rounded to 3 significant digits of its largest entry, with
+  a view that names and shows its tensors as the article did (``embed.W`` .. ``actor_head.b``);
+* ``fix_car/message.txt`` and ``fix_car/instructions.md``: the article's message and system
+  instructions; ``fix_car/car_search.json`` (256 episodes) and ``fix_car/car_test.json`` (1,024
+  other episodes): rollouts suites in the car-on-ramp level; ``fix_car/article/oneshot.json``:
+  Astra's recorded reply as an editor script.
 
-It checks that the message Weightsmith will send is byte-for-byte the prompt the article sent.
+It checks that every message Weightsmith will send is byte-for-byte the prompt the article sent.
 
     uv run python examples/wsp/fetch.py
 """
@@ -30,7 +37,7 @@ from pathlib import Path
 import numpy as np
 from safetensors.numpy import save_file
 
-from weightsmith.models.view import View, ViewTensor, parse_format, render
+from weightsmith.models.view import View, ViewTensor, parse_format, render, round_like_shown
 
 COMMIT = "4d09ba6d6a7e891dd8063974dfe81b3d78e3494f"
 URL = f"https://codeload.github.com/RikiyaT/lm_understand-logs/tar.gz/{COMMIT}"
@@ -153,9 +160,91 @@ def which_game() -> None:
     print(f"which_game: 4 networks in {out.relative_to(HERE)}, prompts identical to the article's")
 
 
+# Experiment 4: the Kinetix actor, by Weightsmith layer name and Flax parameter path.
+_KINETIX = "params/GeneralActorCriticRNN_0/"
+CAR_LAYERS = (
+    ("embed", "params/Dense_0"),
+    *((f"actor{k}", f"{_KINETIX}DenseAndActivation_{k}/Dense_0") for k in range(5)),
+    ("actor_head", f"{_KINETIX}Dense_0"),
+)
+CAR_LEVEL = "l/h2_car_ramp"
+
+
+def fix_car() -> None:
+    src = LOGS / "exp4_fix_car"
+    out = FIXTURES / "fix_car"
+    fmt = parse_format("int_scale(3)")
+    weights = np.load(src / "networks" / "ppo_final_seed0.npz")
+    tensors, layers, view = {}, [], []
+    for name, key in CAR_LAYERS:
+        kernel = round_like_shown(weights[f"{key}/kernel"].astype(np.float64), fmt)  # (in, out)
+        bias = round_like_shown(weights[f"{key}/bias"].astype(np.float64), fmt)
+        tensors[f"{name}.weight"] = np.ascontiguousarray(kernel.T).astype(np.float32)
+        tensors[f"{name}.bias"] = bias.astype(np.float32)
+        layers.append(
+            {
+                "type": "linear",
+                "name": name,
+                "in_features": kernel.shape[0],
+                "out_features": kernel.shape[1],
+            }
+        )
+        if name == "embed":
+            layers.append({"type": "relu"})
+        elif name != "actor_head":
+            layers.append({"type": "tanh"})
+        header = "{label} ({shape}), scale {scale}: one line per row (row i)"
+        view.append(ViewTensor(f"{name}.W", f"{name}.weight", True, header))
+        view.append(ViewTensor(f"{name}.b", f"{name}.bias"))
+    model = out / "shown"
+    model.mkdir(parents=True, exist_ok=True)
+    save_file(tensors, str(model / "model.safetensors"))
+    arch = {"format": "weightsmith.arch/v0", "kind": "sequential", "inputs": 679}
+    (model / "arch.json").write_text(json.dumps({**arch, "layers": layers}, indent=1) + "\n")
+    (model / "view.json").write_text(json.dumps(View(tuple(view)).to_dict(), indent=1) + "\n")
+
+    # The message: the article's prompt, whose last part is every weight.
+    run = src / "runs" / "oneshot_repair"
+    prompt = (run / "reply" / "prompt.txt").read_text()
+    start = prompt.index("\nembed.W (679 x 128), scale") + 1
+    rendered = render(View(tuple(view)), fmt, {k: v.astype(np.float64) for k, v in tensors.items()})
+    message = prompt[:start] + "{{weights}}" + prompt[start + len(rendered) :]
+    if message.replace("{{weights}}", rendered) != prompt:
+        raise SystemExit("fix_car: the rebuilt prompt differs from the article's")
+    (out / "message.txt").write_text(message)
+    (out / "instructions.md").write_text((run / "instructions.md").read_text())
+
+    for name, episodes, seed in (("car_search", 256, 0), ("car_test", 1024, 1)):
+        suite = {
+            "format": "weightsmith.probes/v0",
+            "kind": "rollouts",
+            "name": name,
+            "description": f"{episodes} episodes of the car-on-ramp level, actions sampled",
+            "rollouts": {
+                "env": "kinetix",
+                "level": CAR_LEVEL,
+                "episodes": episodes,
+                "seed": seed,
+                "mode": "sample",
+            },
+        }
+        (out / f"{name}.json").write_text(json.dumps(suite, indent=1) + "\n")
+
+    script = {
+        "format": "weightsmith.script/v0",
+        "turns": [{"text": (run / "reply" / "answer.md").read_text()}],
+    }
+    (out / "article").mkdir(exist_ok=True)
+    (out / "article" / "oneshot.json").write_text(json.dumps(script, indent=1) + "\n")
+    print(
+        f"fix_car: the shown network in {out.relative_to(HERE)}, prompt identical to the article's"
+    )
+
+
 def main() -> None:
     download()
     which_game()
+    fix_car()
 
 
 if __name__ == "__main__":

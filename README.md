@@ -58,7 +58,7 @@ uv sync                      # installs CPU-only PyTorch from the PyTorch index
 uv run weightsmith --version
 ```
 
-Running Hugging Face models needs the `hf` extra (`pip install 'weightsmith[hf]'`, which adds `transformers`). Language-model editors need the `anthropic` or `openai` extra. The development environment that `uv sync` creates includes all three. Checking programs never needs them.
+Running Hugging Face models needs the `hf` extra (`pip install 'weightsmith[hf]'`, which adds `transformers`). Language-model editors need the `anthropic` or `openai` extra, and the language server needs the `lsp` extra. The development environment that `uv sync` creates includes all of them. Checking programs never needs them.
 
 ## Quick start
 
@@ -91,6 +91,7 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 | Example | Shows | Article's result |
 |---|---|---|
 | [wsp/which_game.wsm](examples/wsp/which_game.wsm) | `message_file` with `{{weights}}`, a weight view in `decimals(3)`, a one-reply editor (`protocol = "blocks"`, `tools = []`) and `require answer` with the key kept in the program. Calls the OpenAI API | The right game for 4 of 4 networks |
+| [wsp/fix_car.wsm](examples/wsp/fix_car.wsm) | `int_scale(3)` weights, one `edits` block in the article's edit language applied to the network as shown, and a `rollouts` suite of 1,024 Kinetix episodes run by an out-of-process worker. Calls the OpenAI API | 100% success, up from 0%, with 3.5% of the weights changed |
 
 ## Language at a glance
 
@@ -154,6 +155,7 @@ source (.wsm)
 | `weightsmith diff A B [--out DIR]` | Compare two weight sets; optionally save a patch |
 | `weightsmith apply BASE PATCH --out DIR [--reverse]` | Apply or revert a patch, checking hashes |
 | `weightsmith fixtures [DIR]` | Build the synthetic fixtures |
+| `weightsmith lsp` | Language server on stdio: hover documentation for keywords, built-ins, arguments and declared names |
 
 `run` exit codes: 0 verified, 1 invalid program, 2 runtime error or budget stop, 3 a contract item failed, 4 a contract item was inconclusive.
 
@@ -170,8 +172,8 @@ uv run pyright
 
 - Runnable models are sequential `arch.json` networks or Hugging Face causal language models. Roles exist for the GPT-2 and Llama families only; other models are addressed by parameter name.
 - Finders are structural statistics. They locate anomalies in weights, not capabilities, circuits or features.
-- Behaviours are classification or next-token probe suites with an accuracy metric. There is no generation, sampling or benchmark harness yet.
-- Editors are measured only by probe suites: there are no game rollouts or sampled benchmarks such as MATH-500 yet, which several published weight-space programming experiments need.
+- Behaviours are classification or next-token probe suites measured by accuracy, or episodes measured by success. There is no generation or benchmark harness yet.
+- Rollouts exist for one environment (Kinetix), run by a worker in its own Python environment. There are no sampled benchmarks such as MATH-500 yet.
 - The `python` tool is not a sandbox in the security sense: editor code runs as you, without credentials and with a time limit.
 - Verdicts hold for the declared probe suite only. No confidence intervals are computed.
 - Patches store replacement values, so a dense patch is about twice the size of the tensors it changes.

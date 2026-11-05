@@ -173,11 +173,12 @@ def render(view: View, fmt: WeightFormat, arrays: Mapping[str, np.ndarray]) -> s
 
 
 def round_like_shown(array: np.ndarray, fmt: WeightFormat) -> np.ndarray:
-    """The values an editor reads in format ``fmt``, as numbers (orientation unchanged)."""
+    """The values an editor reads in format ``fmt``, as numbers (orientation unchanged). A value
+    that rounds to zero is +0, as the text shows it, never -0."""
     import numpy as np
 
     values = np.asarray(array, dtype=np.float64)
     if fmt.kind == "decimals":
-        return np.round(values, fmt.digits)
+        return np.round(values, fmt.digits) + 0.0
     exponent = scale_exponent(values, fmt.digits)
-    return np.rint(values / 10.0**exponent) * 10.0**exponent
+    return np.rint(values / 10.0**exponent) * 10.0**exponent + 0.0

@@ -23,6 +23,7 @@ from weightsmith.models.hf import HFArch
 from weightsmith.models.profiles import RoleError, parse_index, parse_role
 from weightsmith.models.view import View, default_view, parse_format, read_view, render
 from weightsmith.reasoning.blocks import Block
+from weightsmith.reasoning.edit_language import apply_edits
 from weightsmith.reasoning.provider import ToolCall, ToolResult, ToolSchema
 from weightsmith.registry import EDIT_OPS, FINDERS, TOOLS
 from weightsmith.runtime.context import LoadedBehavior, LoadedWeights
@@ -243,8 +244,36 @@ class EditorSession:
 
     def run_block(self, block: Block) -> str:
         """Run a block the editor wrote; the result is sent back as the next message."""
-        self.log.append({"block": block.kind, "body": _short(block.body)})
-        raise WeightsmithError(f"no block runner for '{block.kind}'")  # none is granted yet
+        entry: dict[str, Any] = {"block": block.kind, "body": _short(block.body)}
+        self.log.append(entry)
+        try:
+            if block.kind != "edits":
+                raise WeightsmithError(f"no block runner for '{block.kind}'")
+            text, entry["report"] = self._block_edits(block.body)
+        except WeightsmithError as exc:
+            entry["error"] = exc.message
+            raise
+        return text
+
+    def _block_edits(self, body: str) -> tuple[str, dict[str, Any]]:
+        """Apply an edits block to the tensors as the view shows them (see edit_language)."""
+        import numpy as np
+
+        view = self.view()
+        backend = self.executor.backend
+        arrays = backend.arrays(self.tensors, [t.param for t in view.tensors])
+        shown = {
+            t.label: (arrays[t.param].T if t.transpose else arrays[t.param]) for t in view.tensors
+        }
+        edited = {label: array.copy() for label, array in shown.items()}
+        report = apply_edits(body, edited)
+        regions, values = [], []
+        for t in view.tensors:
+            if not np.array_equal(edited[t.label], shown[t.label]):
+                regions.append(Region(t.param))
+                values += (edited[t.label].T if t.transpose else edited[t.label]).ravel().tolist()
+        changes = backend.assign(self.tensors, regions, values) if regions else {}
+        return f"{report.summary()}\n{self._commit(changes, 'edits')}", report.to_dict()
 
     def system_prompt(self) -> str:
         return str(self.op.params.get("system") or SYSTEM_PROMPT)

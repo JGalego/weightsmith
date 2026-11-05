@@ -82,14 +82,17 @@ A model directory's weights are `model.safetensors`, or the shards named by `mod
 
 A behaviour is operational. `behavior parity = probes(...)` fixes how parity is *measured*. It says nothing about where or how a model computes parity.
 
-**Probe suites** come in two kinds, both in `weightsmith.probes/v0` JSON:
+**Probe suites** come in three kinds, all in `weightsmith.probes/v0` JSON:
 
 | `kind` | Examples | Model | Prediction |
 |---|---|---|---|
 | `vectors` (default) | `{"input": [...], "label": k}` | an `arch.json` model | argmax over `output_slice` of the outputs |
 | `tokens` | `{"prompt": "...", "target": "..."}`, or `prompt_ids` and `target_id` | a Hugging Face model | the most likely next token after the prompt |
+| `rollouts` | none; `"rollouts": {"env": "kinetix", "level": "...", "episodes": n, "seed": s, "mode": "sample"}` | an `arch.json` policy network | how each of `n` episodes ends |
 
 A text prompt is tokenized with the model's tokenizer, special tokens included, as the model would see it. A text target must be exactly one token when tokenized without special tokens; include a leading space if the tokenizer needs it. A `tokens` suite may list `candidates` (text) or `candidate_ids`: the prediction is then the most likely candidate, which makes the suite a multiple-choice test. Text needs tokenizer files in the model directory; token ids do not.
+
+A `rollouts` suite runs `n` episodes of the model as a policy in a simulated environment, and each episode counts as one probe (for `min_n`, the resolution `1/n` and the `probe` budget). The episodes run in a worker with its own Python environment, outside Weightsmith's (see `src/weightsmith/workers/README.md`); `kinetix` is the one environment so far, with the network's layers named `embed`, `actor0` to `actor4` and `actor_head`. `seed` fixes the stream of episodes, so suites with different seeds measure on different episodes, and `mode` is `sample` (actions sampled from the policy) or `argmax`. A `rollouts` suite is measured by `success`, and every other suite by `accuracy` (E515).
 
 ## 5. Types
 
@@ -209,7 +212,7 @@ The `min_ratio` condition matters when few items are compared or they are nearly
 | `changed_params` | `max` | the fraction of changed parameters is at most `max` |
 | `answer` | `editor`, `field`, `matches` | the last reply of editor `editor` in this run has a line `field: value` (markdown around the field name is ignored, and a heading `## field` takes the next line as its value) whose value matches the regular expression `matches`. The pattern is part of the program, never of the editor's messages. |
 
-**Metrics**: `accuracy`, the fraction of probe examples predicted correctly (section 4). Higher is better.
+**Metrics**: `accuracy`, the fraction of probe examples predicted correctly, and `success`, the fraction of a `rollouts` suite's episodes that end in success (section 4). Higher is better for both.
 
 ## 7a. Editors
 
@@ -237,7 +240,9 @@ With the OpenAI Responses API, requests are sent with `store: false` and the enc
 
 **Messages and weights as text.** By default the first message is a briefing written by Weightsmith. With `message_file`, the file is sent as it is instead, with `{{weights}}` replaced by every weight as text (no other placeholder exists, E367); this is how a program sends a prompt exactly as published elsewhere. Weights are written through the target's *view*: an optional `view.json` (`weightsmith.view/v0`) in the model directory lists the tensors to show, in order, each with the `label` the editor sees, the `param` it stands for, whether it is shown `transpose`d, and a `header` template (`{label}`, `{shape}` such as `500 x 32`, `{rows}`, `{cols}`, and for `int_scale` `{scale}` such as `1e-3`). Without a view every parameter is shown under its own name. Tensors are separated by a blank line and matrices are written one line per row. `decimals(n)` writes every value with `n` decimals (`-0.000` as `0.000`); `int_scale(n)` writes each tensor as integers times one power of ten chosen so that its largest entry keeps `n` significant digits, and starts each matrix row with its index. Both are lossy: an editor that edits what it read edits the rounded network.
 
-**Protocols.** With `protocol = "tools"` the editor calls function tools. With `protocol = "blocks"` it is given no function tools: it acts by writing a fenced block whose opening line names a tool, and only the last such block of a reply is read. A reply without one ends the delegation. Only tools that have a block form can be granted under this protocol (E368); with `tools = []` the editor answers once in text, which `require answer` can then check.
+**Protocols.** With `protocol = "tools"` the editor calls function tools. With `protocol = "blocks"` it is given no function tools: it acts by writing a fenced block whose opening line names a tool, and only the last such block of a reply is read. A reply without one ends the delegation. Only tools that have a block form can be granted under this protocol (E368), and those tools exist only under it (E370); with `tools = []` the editor answers once in text, which `require answer` can then check.
+
+**The edit language.** An `edits` block holds weight edits written as numbers, one statement per line, applied in order to the tensors as the view names and shows them (a transposed tensor is indexed as shown): `t[i, a:b] = v` fills a region with one value, `t[a:b] = [v, ...]` writes one value per entry in row-major order (a list may continue over several lines), `*=`, `+=` and `-=` combine a region with a value or a list, and `ZERO t` zeroes a whole tensor. An index is an integer, a half-open range `a:b` (either end may be left out) or `:`; missing trailing indices mean whole axes. `#` starts a comment. Values are plain decimal numbers of absolute value at most 1e6. A statement that cannot be read is skipped and reported; the others still apply. The editor gets back how many statements applied and which were skipped, and the change goes through the `mutate` budget like any other edit.
 
 **Tools.** A tool's effects must be allowed by the policy (E410).
 
@@ -253,6 +258,7 @@ With the OpenAI Responses API, requests are sent with `store: false` and the enc
 | `set_weights` | mutate | writes explicit values into a selection, region by region in row-major order |
 | `undo` | mutate | reverts the editor's last change |
 | `python` | execute | runs Python in a separate process with the weights as NumPy arrays `W`; arrays it changes are applied as edits, which also need `mutate` (W403) |
+| `edits` | mutate | under `protocol = "blocks"` only: an `edits` block in the edit language (below) |
 
 Tools name selections with strings: `all`, `params["glob"]` with an optional slice, or a role path such as `layers[1].attn.heads[2]` (section 6).
 
@@ -329,7 +335,7 @@ In 0.1, `verify` raises a repaired finding to `experimentally_supported` only un
 
 1. **syntax**: E1xx.
 2. **names**: unknown or duplicate names, unknown registry entries (E2xx).
-3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope) and editors (E329 a setting outside its choices, E360 delegate to a non-editor, E361 task or task_file, E362 running tools on weights that cannot run, E363 unreadable task file, E364 credentials in a program, E365 both `system` and `system_file`, E366 an unknown weight format, E367 an unknown placeholder in a message file, E368 a tool without a block form under `protocol = "blocks"`, E369 an invalid `answer` pattern; W306 practising on a verified behaviour, W307 practice without run_probes). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) and token ids against the vocabulary (E514).
+3. **types**: argument types and ranges, statement rules, contract rules (E3xx), including roles (E316 no profile, E317 unknown part, E318 missing or bad index, E319 unit-finder scope) and editors (E329 a setting outside its choices, E360 delegate to a non-editor, E361 task or task_file, E362 running tools on weights that cannot run, E363 unreadable task file, E364 credentials in a program, E365 both `system` and `system_file`, E366 an unknown weight format, E367 an unknown placeholder in a message file, E368 a tool without a block form under `protocol = "blocks"`, E369 an invalid `answer` pattern, E370 a block tool under `protocol = "tools"`; W306 practising on a verified behaviour, W307 practice without run_probes). Structural checks against tensor manifests read from safetensors headers and against `config.json` (E5xx): glob matches, slice bounds, role indices (E510, E511), 2-D requirements, compose compatibility, probe-suite widths against `arch.json`, suite kind against the model (E512), tokenizer presence (E513) token ids against the vocabulary (E514), and a suite kind its metric cannot measure (E515).
 4. **effects**: policy rules (E40x), effect permission (E410), and W403 when `python` is granted without `mutate`.
 
 When an input file does not exist yet, structural checks are deferred to run time and a warning (W201, W202) says so. `check` never imports a tensor library.

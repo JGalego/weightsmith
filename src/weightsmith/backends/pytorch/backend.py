@@ -46,7 +46,7 @@ class PyTorchBackend:
             "edit": ops.EDIT_OPS,
             "compose": ops.COMPOSE_OPS,
             "strategy": ops.STRATEGIES,
-            "metric": {"accuracy": None},
+            "metric": {"accuracy": None, "success": None},
             "format": {"weightsmith": None, **({"hf": None} if hf.available() else {})},
         }
         return name in table.get(kind, {}) or (kind == "finder" and name == "anomalies")
@@ -163,8 +163,16 @@ class PyTorchBackend:
     def evaluate(
         self, arch: Architecture, tensors: Tensors, suite: ProbeSuite, metric: str
     ) -> float:
+        if suite.rollouts is not None:
+            if metric != "success":
+                raise IncompatibleError(f"a 'rollouts' suite is measured by success, not {metric}")
+            from weightsmith.evaluation.rollouts import run_rollouts
+
+            arrays = {k: t.detach().cpu().numpy() for k, t in tensors.items()}
+            result = run_rollouts(suite.rollouts, arrays)
+            return float(result["success"]) / suite.rollouts.episodes
         if metric != "accuracy":
-            raise UnsupportedOperation(f"the pytorch backend has no metric '{metric}'")
+            raise UnsupportedOperation(f"the pytorch backend has no metric '{metric}' here")
         if isinstance(arch, HFArch):
             if suite.kind != "tokens":
                 raise IncompatibleError(
@@ -189,6 +197,8 @@ class PyTorchBackend:
         self, arch: Architecture, tensors: Tensors, suite: ProbeSuite
     ) -> list[dict[str, Any]]:
         """Each probe example with its prediction, for showing an editor where a model fails."""
+        if suite.rollouts is not None:
+            raise IncompatibleError(f"probe suite '{suite.name}' has episodes, not examples")
         if isinstance(arch, HFArch):
             run = self.runner(arch, tensors)
             predicted, targets = run.predict(tensors, suite)

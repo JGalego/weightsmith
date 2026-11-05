@@ -1,0 +1,47 @@
+// Experiment 4 of "Sparks of weight-space programming" (Rikiya Takehi, 2026): fix a car policy
+// that PPO trained for a billion steps and that still never succeeds, in one reply, with no tools.
+//
+// The car has to back up, then drive left fast enough to jump a red strip and reach a blue box,
+// in the Kinetix level l/h2_car_ramp. The editor gets the article's message byte for byte: the
+// scene, the rules, the network formula, all 171,664 actor weights as integers times one scale per
+// tensor, the network's result (0 of 256) and the edit language. It replies once, with an edits
+// block, which is applied to the network exactly as shown (rounded). The contract measures 1,024
+// episodes the editor never saw: the article reports 100% success, up from 0%, with 3.5% of the
+// weights changed.
+//
+// Get the network first:      uv run python examples/wsp/fetch.py
+// Set up the Kinetix worker:  see src/weightsmith/workers/README.md
+// Run:                        weightsmith run examples/wsp/fix_car.wsm
+//
+// This calls the OpenAI API (OPENAI_API_KEY, or a .env file) and costs money: about 355,000 input
+// tokens and 10,000 output tokens.
+
+model Car = load("fixtures/fix_car/shown")
+behavior car_test = probes("fixtures/fix_car/car_test.json", metric = success)
+
+editor Astra = provider("openai", model = "gpt-6-astra", effort = "high")
+
+policy {
+    allow reason(max_calls = 1)
+    allow mutate
+    allow probe(max_forward_passes = 2048)
+    allow save
+}
+
+program FixCar {
+    target Car
+    delegate Astra (
+        message_file = "fixtures/fix_car/message.txt",
+        weights_format = "int_scale(3)",
+        system_file = "fixtures/fix_car/instructions.md",
+        protocol = "blocks",
+        tools = [edits],
+        max_steps = 1
+    )
+    contract {
+        improve car_test (min_delta = 0.5)
+        require finite
+    }
+    verify
+    output { evaluation, patch }
+}

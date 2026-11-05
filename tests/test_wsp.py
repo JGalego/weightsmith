@@ -26,6 +26,7 @@ from weightsmith.models.view import (
     round_like_shown,
 )
 from weightsmith.reasoning.blocks import last_block
+from weightsmith.reasoning.edit_language import apply_edits, statements
 from weightsmith.reasoning.openai import ResponsesConversation, parse_responses
 from weightsmith.reasoning.provider import ToolResult, ToolSchema
 from weightsmith.runtime.context import RunOptions
@@ -103,6 +104,68 @@ def test_answer_verdicts() -> None:
     assert judge_answer("A", "Game: Pong", "Game", "(?i)breakout").status is Status.FAILED
     assert judge_answer("A", "no answer", "Game", "x").status is Status.INCONCLUSIVE
     assert judge_answer("A", None, "Game", "x").status is Status.INCONCLUSIVE
+
+
+# --------------------------------------------------------------------------- the edit language
+
+
+def test_edit_statements_apply_in_order() -> None:
+    arrays = {"W": np.ones((3, 4)), "b": np.zeros(4)}
+    report = apply_edits(
+        """
+        W[0, 1:3] = [5, 6]      # a list along a range
+        W[:, 3] *= 2
+        W[2] = 7                # missing trailing index: the whole row
+        W[1, 0] += 0.5
+        b[1:] -= [1, 2,
+                  3]            # a list continued on the next line
+        ZERO b
+        b[0] = 9
+        """,
+        arrays,
+    )
+    assert report.to_dict() == {
+        "statements": 7,
+        "applied": 7,
+        "entries_written": 2 + 3 + 4 + 1 + 3 + 4 + 1,
+        "errors": [],
+        "tensors_touched": ["W", "b"],
+    }
+    assert arrays["W"].tolist() == [[1, 5, 6, 2], [1.5, 1, 1, 2], [7, 7, 7, 7]]
+    assert arrays["b"].tolist() == [9, 0, 0, 0]
+
+
+@pytest.mark.parametrize(
+    ("statement", "error"),
+    [
+        ("V[0] = 1", "no tensor 'V'"),
+        ("W[3, 0] = 1", "out of range"),
+        ("W[0, 0, 0] = 1", "3 indices"),
+        ("W[0, 0:2] = [1, 2, 3]", "3 values for a region of 2"),
+        ("W[0, 0] = 2e6", "at most 1e6"),
+        ("W[0, 0] = nan", "finite"),
+        ("W[0, 0] = x", "not a number"),
+        ("W[0, 1:1] = 1", "empty"),
+        ("W[0, a] = 1", "bad index"),
+        ("W[0, 0] == 1", "not a number"),
+        ("print(W)", "not a statement"),
+    ],
+)
+def test_unreadable_statements_are_skipped_and_reported(statement: str, error: str) -> None:
+    arrays = {"W": np.zeros((3, 4))}
+    report = apply_edits(f"{statement}\nW[1, 1] = 1", arrays)
+    assert report.applied == 1
+    assert len(report.errors) == 1
+    assert error in report.errors[0]
+    assert report.errors[0].startswith("line 1:")
+    assert arrays["W"].sum() == 1
+
+
+def test_statements_keep_their_first_line_number() -> None:
+    assert statements("# x\n\nb[0:3] = [1,\n 2,\n 3]\nZERO b") == [
+        (3, "b[0:3] = [1, 2, 3]"),
+        (6, "ZERO b"),
+    ]
 
 
 # --------------------------------------------------------------------------- Responses API
@@ -239,6 +302,84 @@ def test_delegation_messages_are_checked(
     assert code in codes(compile_text(source))
 
 
+def test_an_edits_block_changes_the_working_copy(workspace: Path, compile_text: Compile) -> None:
+    (workspace / "message.txt").write_text("Fix it.")
+    reply = "Plan.\n```edits\nlayers.0.weight[0, 0:2] = [1.5, -2]\nZERO head.bias\nbad line\n```\n"
+    source = (
+        ask(", tools = [edits]", contract="require finite")
+        .replace("tools = [],", "")
+        .replace("policy { allow reason }", "policy { allow reason allow mutate allow save }")
+    )
+    report = run_answer(
+        workspace, compile_text, reply, source.replace(" verify\n", " verify\n output { patch }\n")
+    )
+    delegation = report.delegations[0]
+    assert delegation["log"][0]["report"]["applied"] == 2
+    assert "line 3: not a statement" in delegation["log"][0]["report"]["errors"][0]
+    assert delegation["changed_params_after"] == 2 + 4
+    assert [v["status"] for v in report.to_dict()["verdicts"]] == ["verified"]
+
+
+def test_edits_are_written_as_blocks_only(workspace: Path, compile_text: Compile) -> None:
+    (workspace / "message.txt").write_text("Fix it.")
+    source = ask(", tools = [edits]").replace('protocol = "blocks", tools = [],', "")
+    assert "E370" in codes(compile_text(source))
+
+
+def _rollouts_suite(workspace: Path, episodes: int = 40) -> None:
+    suite = {
+        "format": "weightsmith.probes/v0",
+        "kind": "rollouts",
+        "name": "drive",
+        "rollouts": {"env": "kinetix", "level": "l/x", "episodes": episodes, "seed": 3},
+    }
+    (workspace / "suites").mkdir(exist_ok=True)
+    (workspace / "suites" / "drive.json").write_text(json.dumps(suite))
+
+
+def test_rollouts_suites_are_measured_by_a_worker(
+    workspace: Path, compile_text: Compile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rollouts_suite(workspace)
+    seen = workspace / "request.json"
+    worker = workspace / "fake_python"
+    worker.write_text(
+        f"#!/bin/sh\ncat > {seen}\n"
+        'echo \'{"episodes": 40, "success": 30, "red": 0, "timeout": 10, "invalid": 0}\'\n'
+    )
+    worker.chmod(0o755)
+    monkeypatch.setenv("WEIGHTSMITH_KINETIX_PYTHON", str(worker))
+    result = compile_text(
+        HEADER
+        + 'behavior drive = probes("suites/drive.json", metric = success)\n'
+        + "program P {\n target Base\n policy { allow probe }\n"
+        + " contract { preserve drive (tolerance = 0.0) }\n verify\n}\n"
+    )
+    assert result.ok, [d.message for d in result.sink.items]
+    report = execute(result.program("P"), PyTorchBackend(), RunOptions(out_dir=workspace / "out"))
+    verdict = report.to_dict()["verdicts"][0]
+    assert verdict["status"] == "verified"
+    assert verdict["measurements"]["after"] == 0.75
+    request = json.loads(seen.read_text())
+    assert {k: request[k] for k in ("level", "episodes", "seed", "mode")} == {
+        "level": "l/x",
+        "episodes": 40,
+        "seed": 3,
+        "mode": "sample",
+    }
+
+
+def test_rollouts_suites_need_the_success_metric(workspace: Path, compile_text: Compile) -> None:
+    _rollouts_suite(workspace)
+    source = (
+        HEADER
+        + 'behavior drive = probes("suites/drive.json", metric = accuracy)\n'
+        + "program P {\n target Base\n policy { allow probe }\n"
+        + " contract { preserve drive (tolerance = 0.0) }\n verify\n}\n"
+    )
+    assert "E515" in codes(compile_text(source))
+
+
 def test_env_files_fill_but_never_override_the_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,3 +429,28 @@ def test_which_game_sends_the_articles_prompt_and_scores_its_answers(
     game = {"Breakout": "breakout", "Pong": "pong", "PacMan": "pacman", "Freeway": "freeway"}
     article = WSP / "fixtures" / "logs" / "exp1_which_game" / "runs" / game[program_name]
     assert transcript["last_request"]["user"] == (article / "prompt.txt").read_text()
+
+
+@needs_article
+def test_fix_car_sends_the_articles_prompt_and_applies_its_edits(tmp_path: Path) -> None:
+    source = (WSP / "fix_car.wsm").read_text()
+    source = source.replace(
+        'provider("openai", model = "gpt-6-astra", effort = "high")',
+        'provider("scripted", script = "fixtures/fix_car/article/oneshot.json")',
+    ).replace("improve car_test (min_delta = 0.5)", "require changed_params (max = 0.04)")
+    program = WSP / "_test_fix_car.wsm"
+    program.write_text(source)
+    try:
+        result = runner.invoke(app, ["run", str(program), "--out", str(tmp_path / "out")])
+    finally:
+        program.unlink()
+    assert result.exit_code == 0, result.output
+    article = WSP / "fixtures" / "logs" / "exp4_fix_car"
+    transcript = json.loads((tmp_path / "out" / "transcripts" / "00-Astra.json").read_text())
+    prompt = (article / "runs" / "oneshot_repair" / "reply" / "prompt.txt").read_text()
+    assert transcript["last_request"]["user"] == prompt
+    report = json.loads((tmp_path / "out" / "report.json").read_text())
+    edits = report["delegations"][0]["log"][0]["report"]
+    expected = json.loads((article / "eval" / "oneshot_result.json").read_text())
+    assert edits == {k: expected["edit_report"][k] for k in edits}
+    assert report["delegations"][0]["changed_params_after"] == expected["changes"]["changed"]
