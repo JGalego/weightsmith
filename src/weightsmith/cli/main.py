@@ -359,6 +359,19 @@ def fixtures(
     console.print(f"  planted in tiny_mlp_defective: {planted}")
 
 
+@app.command()
+def lsp() -> None:
+    """Run the language server on stdin and stdout, for editors (hover documentation)."""
+    import importlib.util
+
+    if importlib.util.find_spec("pygls") is None:
+        err.print("weightsmith lsp needs the 'lsp' extra: pip install 'weightsmith[lsp]'")
+        raise typer.Exit(2)
+    from weightsmith.language.server import serve
+
+    serve()
+
+
 def main() -> None:
     app()
 

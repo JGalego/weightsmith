@@ -34,6 +34,8 @@ hf = ["transformers>=5.0"]
 # Language models as editors (the `delegate` statement). `check` never needs them.
 anthropic = ["anthropic>=2.4"]
 openai = ["openai>=3.45"]
+# The language server for editors (`weightsmith lsp`).
+lsp = ["pygls>=2.1"]
 
 [project.scripts]
 weightsmith = "weightsmith.cli.main:main"
@@ -50,6 +52,7 @@ dev = [
     "transformers>=5.0",
     "anthropic>=2.4",
     "openai>=3.45",
+    "pygls>=2.1",
 ]
 
 [build-system]

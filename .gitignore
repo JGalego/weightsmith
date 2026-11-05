@@ -10,6 +10,7 @@ build/
 examples/fixtures/
 out/
 editors/vscode/*.vsix
+editors/vscode/node_modules/
 
 # Local secrets
 .env
