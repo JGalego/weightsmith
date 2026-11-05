@@ -1,0 +1,108 @@
+# Isolated environment for src/weightsmith/workers/kinetix_worker.py: Kinetix at commit 80ee9c2 with jax 0.4.38,
+# CPU only. Fully pinned (the resolved set, not just the top level), so install it with --no-deps: Kinetix's own
+# metadata also asks for training/rendering extras (pygame, moviepy, hydra, wandb UI, ...) the worker never imports.
+#
+#   uv venv --python 3.12 ~/.cache/weightsmith/workers/kinetix/venv
+#   VIRTUAL_ENV=~/.cache/weightsmith/workers/kinetix/venv uv pip install --no-deps -r kinetix_requirements.txt
+#
+# Top-level choices: jax/jaxlib 0.4.38 (as in the article's training run), jax2d 1.0.1 (Kinetix's pin), flax,
+# chex, gymnax, jaxgl, distrax, safetensors, and the modules `import kinetix.environment` / `kinetix.util` pull in
+# at import time (wandb, omegaconf, imageio, pillow, grain, zarr 2.18.3 / numcodecs 0.13.1 as Kinetix pins them).
+# numpy 2.2.6 and grain 0.2.7 match jax 0.4.38's era (newer grain warns about jax's profiler API).
+absl-py==2.5.1
+annotated-types==0.8.0
+anyio==4.16.0
+array-record==0.8.6
+asciitree==1.0.0
+attrs==26.1.0
+certifi==2026.10.23
+charset-normalizer==3.5.2
+chex==0.1.90
+click==8.5.0
+cloudpickle==3.1.2
+contourpy==1.4.0
+cwevals==0.0.1b1
+cycler==0.12.1
+decorator==5.3.1
+distrax==0.1.5
+distro==1.9.0
+dm-tree==0.1.10
+etils==1.15.0
+farama-notifications==0.0.6
+fasteners==0.20
+flax==0.10.4
+fonttools==4.68.0
+fsspec==2026.9.0
+gast==0.7.0
+googleapis-common-protos==1.76.0
+grain==0.2.7
+gymnasium==1.4.0
+gymnax==0.0.9
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+humanize==4.16.0
+idna==3.20
+imageio==2.38.1
+jax==0.4.38
+jax2d==1.0.1
+jaxgl==1.0.1
+jaxlib==0.4.38
+kinetix-env @ git+https://github.com/FLAIROx/Kinetix.git@80ee9c292837c825cafaf9889323fdcc212efd1b
+kiwisolver==1.5.1
+markdown-it-py==4.2.0
+matplotlib==3.11.2
+mdurl==0.1.2
+ml-dtypes==0.6.0
+more-itertools==11.2.1
+msgpack==1.2.4
+nest-asyncio==1.6.0
+numcodecs==0.13.1
+numpy==2.2.6
+omegaconf==2.4.0
+opentelemetry-api==1.45.2
+opentelemetry-exporter-http-transport==0.66b2
+opentelemetry-exporter-otlp-common==0.66b2
+opentelemetry-exporter-otlp-proto-common==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-proto==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-semantic-conventions==0.66b2
+opt-einsum==3.4.0
+optax==0.2.5
+orbax-checkpoint==0.11.5
+packaging==26.3
+pandas==3.1.1
+pillow==13.0.0
+platformdirs==4.14.5
+portpicker==1.6.0
+protobuf==7.36.2
+psutil==7.2.2
+pydantic==2.14.3
+pydantic-core==2.50.4
+pygments==2.21.0
+pyparsing==3.3.3
+python-dateutil==4.0.0
+pyyaml==6.0.3
+requests==2.34.2
+rich==15.0.0
+safetensors==0.8.0
+scipy==1.18.1
+seaborn==0.13.2
+setuptools==84.2.1
+simplejson==4.2.0
+six==1.17.0
+sniffio==1.3.1
+tensorflow-probability==0.25.0
+tensorstore==0.1.86
+toolz==1.2.0
+treescope==0.1.10
+typing-extensions==4.16.0
+typing-inspection==0.4.5
+tzdata==2026.6
+urllib3==2.8.0
+wandb==0.31.0
+wrapt==2.5.2
+xxhash==4.0.2
+zarr==2.18.3
+zipp==4.1.2

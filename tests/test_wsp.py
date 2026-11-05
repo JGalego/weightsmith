@@ -369,6 +369,24 @@ def test_rollouts_suites_are_measured_by_a_worker(
     }
 
 
+def test_a_worker_error_is_reported(
+    workspace: Path, compile_text: Compile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _rollouts_suite(workspace)
+    worker = workspace / "fake_python"
+    worker.write_text('#!/bin/sh\necho \'{"error": "unknown level l/x"}\'\nexit 2\n')
+    worker.chmod(0o755)
+    monkeypatch.setenv("WEIGHTSMITH_KINETIX_PYTHON", str(worker))
+    result = compile_text(
+        HEADER
+        + 'behavior drive = probes("suites/drive.json", metric = success)\n'
+        + "program P {\n target Base\n policy { allow probe }\n"
+        + " contract { preserve drive (tolerance = 0.0) }\n verify\n}\n"
+    )
+    report = execute(result.program("P"), PyTorchBackend(), RunOptions(out_dir=workspace / "out"))
+    assert "unknown level l/x" in report.to_dict()["stop_reason"]
+
+
 def test_rollouts_suites_need_the_success_metric(workspace: Path, compile_text: Compile) -> None:
     _rollouts_suite(workspace)
     source = (

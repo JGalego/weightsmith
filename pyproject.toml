@@ -81,6 +81,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
+# Workers run in their own environments (jax, Kinetix), which this one does not have.
+exclude = ["src/weightsmith/workers"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 venvPath = "."

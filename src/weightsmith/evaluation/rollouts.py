@@ -32,7 +32,7 @@ def worker_python(env: str) -> Path:
     configured = os.environ.get(f"WEIGHTSMITH_{env.upper()}_PYTHON")
     if configured:
         return Path(configured)
-    return cache_dir() / env / ".venv" / "bin" / "python"
+    return cache_dir() / env / "venv" / "bin" / "python"
 
 
 def run_rollouts(spec: Rollouts, arrays: dict[str, Any]) -> dict[str, Any]:
@@ -63,15 +63,14 @@ def run_rollouts(spec: Rollouts, arrays: dict[str, Any]) -> dict[str, Any]:
             text=True,
             check=False,
         )
-    if done.returncode != 0:
-        tail = "\n".join(done.stderr.strip().splitlines()[-5:])
-        raise UnsupportedOperation(f"the '{spec.env}' rollout worker failed:\n{tail}")
     try:
         result = json.loads(done.stdout)
-    except json.JSONDecodeError as exc:
-        raise UnsupportedOperation(
-            f"the '{spec.env}' rollout worker wrote no JSON result: {exc}"
-        ) from exc
+    except json.JSONDecodeError:
+        result = None
+    if done.returncode != 0 or not isinstance(result, dict) or "error" in result:
+        reason = result.get("error") if isinstance(result, dict) else None
+        reason = reason or "\n".join(done.stderr.strip().splitlines()[-5:])
+        raise UnsupportedOperation(f"the '{spec.env}' rollout worker failed: {reason}")
     if result.get("episodes") != spec.episodes:
         raise UnsupportedOperation(
             f"the '{spec.env}' rollout worker ran {result.get('episodes')} episodes, "
