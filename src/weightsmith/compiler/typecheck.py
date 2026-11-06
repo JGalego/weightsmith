@@ -1342,6 +1342,21 @@ class Checker:
                 span,
                 "'rollouts' suites are measured by success, other suites by accuracy",
             )
+        if suite.kind == "benchmark":
+            if target.hf is None:
+                self.type_error(
+                    "E512",
+                    f"probe suite '{behavior.name}' is a benchmark of a language model, but "
+                    f"'{target.name}' is not one",
+                    span,
+                )
+            elif not target.hf.has_tokenizer:
+                self.type_error(
+                    "E513",
+                    f"probe suite '{behavior.name}' prompts with text, but '{target.name}' has no "
+                    "tokenizer files",
+                    span,
+                )
         if suite.kind == "rollouts" and target.arch is None:
             self.type_error(
                 "E512",

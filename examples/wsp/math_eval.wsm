@@ -1,0 +1,37 @@
+// Experiment 8 of "Sparks of weight-space programming" (Rikiya Takehi, 2026), the evaluation:
+// Qwen3.5-0.8B on MATH-500, before and after the edit Astra made with 50 forward passes (p50c).
+//
+// The edit subtracts a "loop" direction from 64 output columns of the MLPs of layers 15 and 19
+// (131,072 weights). The program puts the article's two edited tensors into the model and
+// measures MATH-500 on both: 4 answers per problem, thinking on, at most 32,768 tokens, the last
+// \boxed{} answer graded with math-verify. The article reports 7.9% for the model (93.0% of the
+// answers cut at the token limit) and 48.1% after the edit (33.1% cut).
+//
+// Get the model first:  uv run python examples/wsp/fetch.py
+// Run:                  weightsmith run examples/wsp/math_eval.wsm
+//
+// Each evaluation is 10 jobs on Hugging Face Jobs (your Hugging Face login, billed to your
+// account), with the model in a private repository of yours. The GPU budget caps the cost:
+// 30 GPU-hours on an A100 is at most $75; finished jobs are never run again.
+
+model Qwen = load("fixtures/math/qwen35")
+weights P50c = load("fixtures/math/p50c")
+behavior math500 = probes("fixtures/math/math500.json", metric = accuracy)
+
+policy {
+    allow mutate
+    allow probe(max_gpu_hours = 30)
+}
+
+program MathEval {
+    target Qwen
+    compose {
+        transplant P50c
+    }
+    contract {
+        improve math500 (min_delta = 0.3)
+        require finite
+    }
+    verify
+    output { evaluation }
+}

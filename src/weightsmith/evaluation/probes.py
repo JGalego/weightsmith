@@ -74,6 +74,61 @@ class Rollouts(BaseModel):
     mode: Literal["sample", "argmax"] = "sample"
 
 
+# Problems per benchmark: the test split each job reads (``workers/hf_bench_job.py``).
+BENCHMARK_PROBLEMS = {"math500": 500, "gsm8k": 1319}
+
+
+class Benchmark(BaseModel):
+    """A generative benchmark of a language model, for a ``kind: "benchmark"`` suite.
+
+    The model answers every problem ``samples`` times and each answer is graded; the score is the
+    share of correct answers. The problems are split into ``shards`` (problems i, i + k, ...),
+    each one a job on Hugging Face Jobs with GPU ``flavor`` that may run for at most
+    ``timeout_hours``; ``only_shards`` runs some of them only, as a pilot does. At most
+    ``parallel`` jobs run at once. ``protocol`` fixes the prompt and the sampling
+    (``weightsmith.evaluation.benchmarks``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: Literal["math500", "gsm8k"]
+    samples: int = Field(ge=1)
+    protocol: Literal["think35"] = "think35"
+    shards: int = Field(default=1, ge=1)
+    only_shards: list[int] | None = Field(default=None, min_length=1)
+    flavor: str = "a100-large"
+    timeout_hours: float = Field(default=2.0, gt=0, le=24)
+    parallel: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def _shards_exist(self) -> Benchmark:
+        if self.shards > BENCHMARK_PROBLEMS[self.name]:
+            raise ValueError(f"{self.name} has fewer problems than {self.shards} shards")
+        if self.only_shards is not None:
+            if len(set(self.only_shards)) != len(self.only_shards):
+                raise ValueError("only_shards lists a shard twice")
+            if not all(0 <= i < self.shards for i in self.only_shards):
+                raise ValueError(f"only_shards must lie in 0..{self.shards - 1}")
+        return self
+
+    @property
+    def selected(self) -> list[int]:
+        return (
+            sorted(self.only_shards) if self.only_shards is not None else list(range(self.shards))
+        )
+
+    @property
+    def problems(self) -> int:
+        """Problems in the selected shards."""
+        total = BENCHMARK_PROBLEMS[self.name]
+        return sum(len(range(i, total, self.shards)) for i in self.selected)
+
+    @property
+    def gpu_hours(self) -> float:
+        """The most GPU time the evaluation can take: every job running to its timeout."""
+        return len(self.selected) * self.timeout_hours
+
+
 class ProbeSuite(BaseModel):
     """A probe suite: the finite, declared evidence base of a behaviour.
 
@@ -82,12 +137,14 @@ class ProbeSuite(BaseModel):
     models; ``candidates`` (or ``candidate_ids``) optionally restricts the prediction to a set of
     tokens, which makes the suite a multiple-choice test. ``kind: "rollouts"`` has no examples:
     it is a number of episodes of a policy network in an environment, each one a probe.
+    ``kind: "benchmark"`` has none either: it is a generative benchmark of a language model, each
+    sampled answer a probe.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     format: str = PROBE_FORMAT
-    kind: Literal["vectors", "tokens", "rollouts"] = "vectors"
+    kind: Literal["vectors", "tokens", "rollouts", "benchmark"] = "vectors"
     name: str
     description: str = ""
     output_slice: tuple[int, int] | None = None
@@ -95,19 +152,23 @@ class ProbeSuite(BaseModel):
     candidate_ids: list[int] | None = Field(default=None, min_length=2)
     examples: list[ProbeExample | TokenExample] = Field(default_factory=list)
     rollouts: Rollouts | None = None
+    benchmark: Benchmark | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> ProbeSuite:
         if self.format != PROBE_FORMAT:
             raise ValueError(f"unsupported probe format '{self.format}', expected {PROBE_FORMAT}")
-        if self.kind == "rollouts":
-            if self.rollouts is None or self.examples:
-                raise ValueError("a 'rollouts' suite has a 'rollouts' entry and no examples")
-            if self.output_slice is not None or self.candidates or self.candidate_ids:
-                raise ValueError("output_slice and candidates do not apply to 'rollouts' suites")
+        for kind in ("rollouts", "benchmark"):
+            entry = getattr(self, kind)
+            if self.kind == kind:
+                if entry is None or self.examples:
+                    raise ValueError(f"a '{kind}' suite has a '{kind}' entry and no examples")
+                if self.output_slice is not None or self.candidates or self.candidate_ids:
+                    raise ValueError(f"output_slice and candidates do not apply to '{kind}' suites")
+            elif entry is not None:
+                raise ValueError(f"'{kind}' applies to '{kind}' suites only")
+        if self.kind in ("rollouts", "benchmark"):
             return self
-        if self.rollouts is not None:
-            raise ValueError("'rollouts' applies to 'rollouts' suites only")
         if not self.examples:
             raise ValueError("a suite needs at least one example")
         wanted = ProbeExample if self.kind == "vectors" else TokenExample
@@ -161,7 +222,14 @@ class ProbeSuite(BaseModel):
     def n(self) -> int:
         if self.rollouts is not None:
             return self.rollouts.episodes
+        if self.benchmark is not None:
+            return self.benchmark.problems * self.benchmark.samples
         return len(self.examples)
+
+    @property
+    def gpu_hours(self) -> float:
+        """The most GPU time one evaluation of the suite can take (0 when it runs here)."""
+        return self.benchmark.gpu_hours if self.benchmark is not None else 0.0
 
 
 def load_probe_suite(path: Path) -> ProbeSuite:

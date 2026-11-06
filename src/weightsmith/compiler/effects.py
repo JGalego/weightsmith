@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from weightsmith.compiler.types import FRACTION, INT, Type
+from weightsmith.compiler.types import FLOAT, FRACTION, INT, Type
 from weightsmith.diagnostics import DiagnosticSink, Span, Stage
 from weightsmith.language import nodes as n
 
@@ -33,7 +33,7 @@ class Effect(StrEnum):
 BUDGETS: dict[Effect, dict[str, Type]] = {
     Effect.LOAD: {"max_bytes": INT},
     Effect.INSPECT: {},
-    Effect.PROBE: {"max_forward_passes": INT},
+    Effect.PROBE: {"max_forward_passes": INT, "max_gpu_hours": FLOAT},
     Effect.MUTATE: {"max_changed_params": FRACTION},
     Effect.TRAIN: {"max_steps": INT},
     Effect.REASON: {"max_calls": INT, "max_tokens": INT},
@@ -167,6 +167,11 @@ def _budget_value(kwarg: n.Kwarg, expected: Type, sink: DiagnosticSink) -> float
             sink.error(Stage.EFFECTS, "E405", "budgets cannot be negative", value.span)
             return None
         return float(value.value)
+    if expected == FLOAT and isinstance(value, n.IntLit | n.FloatLit):
+        if value.value < 0:
+            sink.error(Stage.EFFECTS, "E405", "budgets cannot be negative", value.span)
+            return None
+        return float(value.value)
     if expected == FRACTION and isinstance(value, n.PercentLit | n.FloatLit):
         if not 0.0 <= value.value <= 1.0:
             sink.error(
@@ -174,12 +179,9 @@ def _budget_value(kwarg: n.Kwarg, expected: Type, sink: DiagnosticSink) -> float
             )
             return None
         return float(value.value)
+    notes = ["write fractions as percentages, for example 5%"] if expected == FRACTION else []
     sink.error(
-        Stage.EFFECTS,
-        "E406",
-        f"budget '{kwarg.name.name}' expects {expected}",
-        value.span,
-        "write fractions as percentages, for example 5%",
+        Stage.EFFECTS, "E406", f"budget '{kwarg.name.name}' expects {expected}", value.span, *notes
     )
     return None
 

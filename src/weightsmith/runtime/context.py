@@ -75,6 +75,7 @@ class Budgets:
 
     policy: Policy
     forward_passes: int = 0
+    gpu_hours: float = 0.0
     bytes_loaded: int = 0
     editor_calls: int = 0
     editor_tokens: int = 0
@@ -99,6 +100,16 @@ class Budgets:
             )
         self.forward_passes += count
 
+    def reserve_probe(self, suite: ProbeSuite, span: Span | None) -> None:
+        """Reserve one evaluation of ``suite``: its probes, and its GPU time at the most it can
+        take, so that a GPU budget caps what remote jobs can cost."""
+        hours = suite.gpu_hours
+        limit = self.policy.budget(Effect.PROBE, "max_gpu_hours")
+        if hours and limit is not None and self.gpu_hours + hours > limit + 1e-9:
+            raise BudgetExceeded("probe", "max_gpu_hours", limit, self.gpu_hours + hours, span)
+        self.reserve_forward_passes(suite.n, span)
+        self.gpu_hours += hours
+
     def reserve_bytes(self, count: int, span: Span | None) -> None:
         limit = self.policy.budget(Effect.LOAD, "max_bytes")
         if limit is not None and self.bytes_loaded + count > limit:
@@ -115,6 +126,10 @@ class Budgets:
             "forward_passes": {
                 "used": self.forward_passes,
                 "limit": self.policy.budget(Effect.PROBE, "max_forward_passes"),
+            },
+            "gpu_hours": {
+                "reserved": self.gpu_hours,
+                "limit": self.policy.budget(Effect.PROBE, "max_gpu_hours"),
             },
             "bytes_loaded": {
                 "used": self.bytes_loaded,

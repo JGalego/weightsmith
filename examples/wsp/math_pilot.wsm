@@ -1,0 +1,32 @@
+// A pilot of math_eval.wsm: the same two evaluations on the first of its 10 jobs only (50 of the
+// 500 problems, 200 answers), to measure what a job takes and costs before running them all.
+// In the article's evaluation this shard scored 7.0% before the edit (95% of the answers cut at
+// the token limit). The pilot's results are kept, so math_eval.wsm does not run this job again.
+//
+// Get the model first:  uv run python examples/wsp/fetch.py
+// Run:                  weightsmith run examples/wsp/math_pilot.wsm
+//
+// Two jobs on Hugging Face Jobs, billed to your account; the GPU budget caps them at 3 A100-hours
+// ($7.50).
+
+model Qwen = load("fixtures/math/qwen35")
+weights P50c = load("fixtures/math/p50c")
+behavior math500 = probes("fixtures/math/math500_pilot.json", metric = accuracy)
+
+policy {
+    allow mutate
+    allow probe(max_gpu_hours = 3)
+}
+
+program MathPilot {
+    target Qwen
+    compose {
+        transplant P50c
+    }
+    contract {
+        improve math500 (min_delta = 0.2)
+        require finite
+    }
+    verify
+    output { evaluation }
+}

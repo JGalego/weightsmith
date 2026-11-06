@@ -608,7 +608,7 @@ class Executor:
                 continue
             try:
                 before = self._baseline(item.behavior, behavior, target, item.span)
-                self.budgets.reserve_forward_passes(behavior.suite.n, item.span)
+                self.budgets.reserve_probe(behavior.suite, item.span)
             except BudgetExceeded as exc:
                 exhausted = exc
                 verdicts.append(
@@ -649,7 +649,7 @@ class Executor:
     ) -> float:
         if behavior_id not in self.baselines:
             assert target.arch is not None
-            self.budgets.reserve_forward_passes(behavior.suite.n, span)
+            self.budgets.reserve_probe(behavior.suite, span)
             self.baselines[behavior_id] = self.backend.evaluate(
                 target.arch, target.tensors, behavior.suite, behavior.metric
             )

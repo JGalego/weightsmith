@@ -171,6 +171,19 @@ class PyTorchBackend:
             arrays = {k: t.detach().cpu().numpy() for k, t in tensors.items()}
             result = run_rollouts(suite.rollouts, arrays)
             return float(result["success"]) / suite.rollouts.episodes
+        if suite.benchmark is not None:
+            if metric != "accuracy":
+                raise IncompatibleError(
+                    f"a 'benchmark' suite is measured by accuracy, not {metric}"
+                )
+            if not isinstance(arch, HFArch):
+                raise IncompatibleError(
+                    f"probe suite '{suite.name}' is a benchmark of a language model, but the "
+                    "model is not one"
+                )
+            from weightsmith.evaluation.benchmarks import run_benchmark
+
+            return float(run_benchmark(suite.benchmark, arch.directory, tensors)["accuracy"])
         if metric != "accuracy":
             raise UnsupportedOperation(f"the pytorch backend has no metric '{metric}' here")
         if isinstance(arch, HFArch):
@@ -197,8 +210,8 @@ class PyTorchBackend:
         self, arch: Architecture, tensors: Tensors, suite: ProbeSuite
     ) -> list[dict[str, Any]]:
         """Each probe example with its prediction, for showing an editor where a model fails."""
-        if suite.rollouts is not None:
-            raise IncompatibleError(f"probe suite '{suite.name}' has episodes, not examples")
+        if suite.rollouts is not None or suite.benchmark is not None:
+            raise IncompatibleError(f"probe suite '{suite.name}' has no examples to show")
         if isinstance(arch, HFArch):
             run = self.runner(arch, tensors)
             predicted, targets = run.predict(tensors, suite)

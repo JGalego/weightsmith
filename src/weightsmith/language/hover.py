@@ -89,6 +89,10 @@ EFFECT_DOCS: dict[Effect, str] = {
 BUDGET_DOCS: dict[str, str] = {
     "max_bytes": "Most bytes loaded from disk.",
     "max_forward_passes": "Most forward passes: one per probe example or input per evaluation.",
+    "max_gpu_hours": (
+        "Most GPU hours of benchmark jobs, each evaluation charged as if every job ran to its "
+        "timeout: a cap on what the jobs can cost."
+    ),
     "max_changed_params": "Largest fraction of the target's parameters that may change.",
     "max_steps": "Most optimiser steps.",
     "max_calls": "Most editor turns.",

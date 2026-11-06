@@ -82,17 +82,20 @@ A model directory's weights are `model.safetensors`, or the shards named by `mod
 
 A behaviour is operational. `behavior parity = probes(...)` fixes how parity is *measured*. It says nothing about where or how a model computes parity.
 
-**Probe suites** come in three kinds, all in `weightsmith.probes/v0` JSON:
+**Probe suites** come in four kinds, all in `weightsmith.probes/v0` JSON:
 
 | `kind` | Examples | Model | Prediction |
 |---|---|---|---|
 | `vectors` (default) | `{"input": [...], "label": k}` | an `arch.json` model | argmax over `output_slice` of the outputs |
 | `tokens` | `{"prompt": "...", "target": "..."}`, or `prompt_ids` and `target_id` | a Hugging Face model | the most likely next token after the prompt |
 | `rollouts` | none; `"rollouts": {"env": "kinetix", "level": "...", "episodes": n, "seed": s, "mode": "sample"}` | an `arch.json` policy network | how each of `n` episodes ends |
+| `benchmark` | none; `"benchmark": {"name": "math500", "samples": k, "protocol": "think35", "shards": s, "flavor": "a100-large", "timeout_hours": h}` | a Hugging Face model with a tokenizer | `k` sampled answers to each problem, each graded |
 
 A text prompt is tokenized with the model's tokenizer, special tokens included, as the model would see it. A text target must be exactly one token when tokenized without special tokens; include a leading space if the tokenizer needs it. A `tokens` suite may list `candidates` (text) or `candidate_ids`: the prediction is then the most likely candidate, which makes the suite a multiple-choice test. Text needs tokenizer files in the model directory; token ids do not.
 
 A `rollouts` suite runs `n` episodes of the model as a policy in a simulated environment, and each episode counts as one probe (for `min_n`, the resolution `1/n` and the `probe` budget). The episodes run in a worker with its own Python environment, outside Weightsmith's (see `src/weightsmith/workers/README.md`); `kinetix` is the one environment so far, with the network's layers named `embed`, `actor0` to `actor4` and `actor_head`. `seed` fixes the stream of episodes, so suites with different seeds measure on different episodes, and `mode` is `sample` (actions sampled from the policy) or `argmax`. A `rollouts` suite is measured by `success`, and every other suite by `accuracy` (E515).
+
+A `benchmark` suite is a generative benchmark: the model answers each problem of a test set (`math500`, MATH-500; `gsm8k`, GSM8K) `samples` times, and the metric is the share of correct answers; each answer counts as one probe. `protocol` fixes the prompt and the sampling: `think35` is the thinking-mode setting of the Qwen3.5 model card (temperature 0.6, top-p 0.95, top-k 20, presence penalty 1.5, at most 32,768 tokens), with the problem and "Please reason step by step, and put your final answer within \boxed{}." as the user turn, and the last `\boxed{}` answer graded with math-verify. The problems are split into `shards` (problems `i`, `i + shards`, ...), each one a job on Hugging Face Jobs with GPU `flavor`, at most `parallel` at a time; `only_shards` runs some of them only. The jobs read the model from a private repository of the logged-in Hugging Face user (`<user>/weightsmith-runs`, or `WEIGHTSMITH_HF_REPO`): the model directory as loaded, uploaded once, and a patch of the tensors whose bits changed. Each shard's result is kept, under a key that hashes the model, the patch, the benchmark, the protocol and the job's packages, so a shard is never run twice. Credentials come from the Hugging Face login, never from the program.
 
 ## 5. Types
 
@@ -274,7 +277,7 @@ Tools name selections with strings: `all`, `params["glob"]` with an optional sli
 |---|---|---|
 | `load` | loading weights and probe suites | `max_bytes` |
 | `inspect` | `inspect`, `find`, `verify` with only `require` items, and the reading tools of `delegate` | |
-| `probe` | `verify` with `preserve`/`improve` items, and `run_probes`/`forward` | `max_forward_passes`: one per probe example or input per evaluation |
+| `probe` | `verify` with `preserve`/`improve` items, and `run_probes`/`forward` | `max_forward_passes`: one per probe example or input per evaluation; `max_gpu_hours`: GPU time of `benchmark` jobs, each evaluation charged as if every job ran to its `timeout_hours`, which caps what the jobs can cost |
 | `mutate` | `edit`, `compose`, `repair`, and the editing tools of `delegate` | `max_changed_params`: a fraction of the target's parameters |
 | `train` | nothing yet | `max_steps` |
 | `reason` | `delegate`: every call to an editor; may send model data off the machine | `max_calls` (editor turns), `max_tokens` (input plus output, as the provider reports them) |

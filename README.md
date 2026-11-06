@@ -92,6 +92,7 @@ All examples run on synthetic fixtures with known ground truth (`weightsmith fix
 |---|---|---|
 | [wsp/which_game.wsm](examples/wsp/which_game.wsm) | `message_file` with `{{weights}}`, a weight view in `decimals(3)`, a one-reply editor (`protocol = "blocks"`, `tools = []`) and `require answer` with the key kept in the program. Calls the OpenAI API | The right game for 4 of 4 networks |
 | [wsp/fix_car.wsm](examples/wsp/fix_car.wsm) | `int_scale(3)` weights, one `edits` block in the article's edit language applied to the network as shown, and a `rollouts` suite of 1,024 Kinetix episodes run by an out-of-process worker. Calls the OpenAI API | 100% success, up from 0%, with 3.5% of the weights changed |
+| [wsp/math_eval.wsm](examples/wsp/math_eval.wsm) | A `benchmark` suite: MATH-500 with 4 sampled answers per problem, run as 10 Hugging Face Jobs with vLLM, before and after transplanting the edit Astra made to Qwen3.5-0.8B; a `max_gpu_hours` budget caps the cost. [wsp/math_pilot.wsm](examples/wsp/math_pilot.wsm) runs the first job only. Bills your Hugging Face account | MATH-500 48.1%, up from 7.9% |
 
 ## Language at a glance
 
@@ -172,8 +173,8 @@ uv run pyright
 
 - Runnable models are sequential `arch.json` networks or Hugging Face causal language models. Roles exist for the GPT-2 and Llama families only; other models are addressed by parameter name.
 - Finders are structural statistics. They locate anomalies in weights, not capabilities, circuits or features.
-- Behaviours are classification or next-token probe suites measured by accuracy, or episodes measured by success. There is no generation or benchmark harness yet.
-- Rollouts exist for one environment (Kinetix), run by a worker in its own Python environment. There are no sampled benchmarks such as MATH-500 yet.
+- Behaviours are classification or next-token probe suites measured by accuracy, episodes measured by success, or generative benchmarks measured by accuracy.
+- Rollouts exist for one environment (Kinetix), run by a worker in its own Python environment. Benchmarks exist for MATH-500 and GSM8K with one protocol, and run only on Hugging Face Jobs.
 - The `python` tool is not a sandbox in the security sense: editor code runs as you, without credentials and with a time limit.
 - Verdicts hold for the declared probe suite only. No confidence intervals are computed.
 - Patches store replacement values, so a dense patch is about twice the size of the tensors it changes.

@@ -549,7 +549,7 @@ class EditorSession:
         if target.arch is None:
             raise WeightsmithError("the target cannot run")
         loaded = practice[behavior]
-        self.executor.budgets.reserve_forward_passes(loaded.suite.n, self.op.span)
+        self.executor.budgets.reserve_probe(loaded.suite, self.op.span)
         rows = self.executor.backend.examples(target.arch, self.tensors, loaded.suite)
         correct = sum(1 for r in rows if r["correct"])
         failures = [r for r in rows if not r["correct"]][: max(0, show_failures)]
