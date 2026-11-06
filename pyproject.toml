@@ -13,6 +13,8 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Compilers",
 ]
@@ -28,8 +30,15 @@ dependencies = [
     "numpy>=1.26",
 ]
 
+[project.urls]
+Homepage = "https://github.com/JGalego/weightsmith"
+Documentation = "https://github.com/JGalego/weightsmith/blob/main/docs/semantics.md"
+Repository = "https://github.com/JGalego/weightsmith"
+Issues = "https://github.com/JGalego/weightsmith/issues"
+
 [project.optional-dependencies]
-# Run Hugging Face model directories (config.json + safetensors). `check` never needs it.
+# Run Hugging Face model directories (config.json + safetensors), and benchmark suites on Hugging
+# Face Jobs (through huggingface_hub, which transformers brings). `check` never needs it.
 hf = ["transformers>=5.0"]
 # Language models as editors (the `delegate` statement). `check` never needs them.
 anthropic = ["anthropic>=2.4"]

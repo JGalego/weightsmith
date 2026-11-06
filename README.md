@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="assets/logo.svg" alt="Weightsmith logo" width="128"><br>
+  <img src="https://raw.githubusercontent.com/JGalego/weightsmith/main/assets/logo.svg" alt="Weightsmith logo" width="128"><br>
   Weightsmith
 </h1>
 
@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/JGalego/weightsmith/actions/workflows/ci.yml"><img src="https://github.com/JGalego/weightsmith/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
+  <a href="https://github.com/JGalego/weightsmith/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/status-pre--alpha-orange" alt="Status: pre-alpha">
   <a href="https://docs.astral.sh/uv/"><img src="https://img.shields.io/badge/managed%20with-uv-DE5FE9" alt="Managed with uv"></a>
   <a href="https://docs.astral.sh/ruff/"><img src="https://img.shields.io/badge/code%20style-ruff-D7FF64" alt="Code style: ruff"></a>
@@ -25,7 +25,7 @@ The editing can be done by fixed strategies, by your own code, or by a language 
 
 Claude gets a broken model, a budget and a contract in this program, and practises on one set of probes while Weightsmith judges the repair on another.
 
-<a href="examples/repair_with_claude.wsm"><img src="assets/readme-example.svg" alt="RepairWithClaude: a Weightsmith program that gives Claude a broken model, a budget and a contract and verifies the repair on held-out probes"></a>
+<a href="https://github.com/JGalego/weightsmith/blob/main/examples/repair_with_claude.wsm"><img src="https://raw.githubusercontent.com/JGalego/weightsmith/main/assets/readme-example.svg" alt="RepairWithClaude: a Weightsmith program that gives Claude a broken model, a budget and a contract and verifies the repair on held-out probes"></a>
 
 Here is an abridged copy of Claude's report and the verdicts:
 
@@ -44,7 +44,7 @@ Changed parameters: 384 of 131264 (0.2925%) in 3 tensor(s)
 
 The original model is untouched, since the run writes an exact, reversible patch and a transcript of every exchange. The same repair with a scripted editor runs offline:
 
-<img src="assets/demo.gif" alt="weightsmith check and weightsmith run on repair_with_editor.wsm, where every contract item is verified and 0.2% of the parameters change">
+<img src="https://raw.githubusercontent.com/JGalego/weightsmith/main/assets/demo.gif" alt="weightsmith check and weightsmith run on repair_with_editor.wsm, where every contract item is verified and 0.2% of the parameters change">
 
 ## 💡 Why a language
 
@@ -81,31 +81,31 @@ These run on synthetic models with planted defects, built by `weightsmith fixtur
 
 **Find and repair**
 
-- [inspect_transformer.wsm](examples/inspect_transformer.wsm): structural finders on raw Transformer weights catch a NaN, a duplicate tensor and a dead row.
-- [repair_mlp.wsm](examples/repair_mlp.wsm): finds the outlying rows and repairs them, then backs each finding with intervention evidence before verifying the result.
-- [repair_tiny_llama.wsm](examples/repair_tiny_llama.wsm): finds amplified MLP neurons in a Llama-style model by role; `count` goes from 0.70 to 1.00.
-- [prune_mlp.wsm](examples/prune_mlp.wsm): prunes by magnitude and zeroes a slice while preserving both behaviours.
+- [inspect_transformer.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/inspect_transformer.wsm): structural finders on raw Transformer weights catch a NaN, a duplicate tensor and a dead row.
+- [repair_mlp.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/repair_mlp.wsm): finds the outlying rows and repairs them, then backs each finding with intervention evidence before verifying the result.
+- [repair_tiny_llama.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/repair_tiny_llama.wsm): finds amplified MLP neurons in a Llama-style model by role; `count` goes from 0.70 to 1.00.
+- [prune_mlp.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/prune_mlp.wsm): prunes by magnitude and zeroes a slice while preserving both behaviours.
 
 **Merge and transplant**
 
-- [merge_mlps.wsm](examples/merge_mlps.wsm): interpolates with a fine-tuned variant and transplants a layer.
-- [merge_unrelated.wsm](examples/merge_unrelated.wsm): runs the same merge with an unrelated model, and verification fails as it should.
-- [head_surgery.wsm](examples/head_surgery.wsm): zeroes an attention head and transplants a key/value head from a donor.
+- [merge_mlps.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/merge_mlps.wsm): interpolates with a fine-tuned variant and transplants a layer.
+- [merge_unrelated.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/merge_unrelated.wsm): runs the same merge with an unrelated model, and verification fails as it should.
+- [head_surgery.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/head_surgery.wsm): zeroes an attention head and transplants a key/value head from a donor.
 
 **Language models as editors**
 
-- [repair_with_editor.wsm](examples/repair_with_editor.wsm): a scripted editor that runs offline and replays exactly with `--replay`.
-- [repair_with_claude.wsm](examples/repair_with_claude.wsm): gives the same task to Claude, with only "one task is broken" as a hint, through the Anthropic API.
+- [repair_with_editor.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/repair_with_editor.wsm): a scripted editor that runs offline and replays exactly with `--replay`.
+- [repair_with_claude.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/repair_with_claude.wsm): gives the same task to Claude, with only "one task is broken" as a hint, through the Anthropic API.
 
 ## ✨ Replicating *Sparks of weight-space programming*
 
-[examples/wsp/](examples/wsp) reruns the experiments from [the article](https://rikiyat.github.io/blog/weight-space-programming/) with its own networks and prompts and with GPT-6 Astra as the editor. `uv run python examples/wsp/fetch.py` downloads them from the [published logs](https://github.com/RikiyaT/lm_understand-logs) (CC BY 4.0) and checks that every prompt rebuilds byte for byte.
+[examples/wsp/](https://github.com/JGalego/weightsmith/tree/main/examples/wsp) reruns the experiments from [the article](https://rikiyat.github.io/blog/weight-space-programming/) with its own networks and prompts and with GPT-6 Astra as the editor. `uv run python examples/wsp/fetch.py` downloads them from the [published logs](https://github.com/RikiyaT/lm_understand-logs) (CC BY 4.0) and checks that every prompt rebuilds byte for byte.
 
 | Experiment | Article | Weightsmith[^cost] |
 |---|---|---|
-| [which_game.wsm](examples/wsp/which_game.wsm): name the game a PPO policy plays from its weights alone | Right for every network | Right for every network with similar confidence |
-| [fix_car.wsm](examples/wsp/fix_car.wsm): fix a Kinetix car policy in one reply without tools | 0% → 100% success | The article's edit replays to 100%; our own live run stayed at 0% |
-| [math_eval.wsm](examples/wsp/math_eval.wsm): MATH-500 before and after the article's edit to Qwen3.5-0.8B | 7.9% → 48.1% | 6.0% → 52.0% on the first of ten shards, where the article got 7.0% → 37.0%[^grader] |
+| [which_game.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/wsp/which_game.wsm): name the game a PPO policy plays from its weights alone | Right for every network | Right for every network with similar confidence |
+| [fix_car.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/wsp/fix_car.wsm): fix a Kinetix car policy in one reply without tools | 0% → 100% success | The article's edit replays to 100%; our own live run stayed at 0% |
+| [math_eval.wsm](https://github.com/JGalego/weightsmith/blob/main/examples/wsp/math_eval.wsm): MATH-500 before and after the article's edit to Qwen3.5-0.8B | 7.9% → 48.1% | 6.0% → 52.0% on the first of ten shards, where the article got 7.0% → 37.0%[^grader] |
 
 [^cost]: The live runs cost about \$10 in OpenAI calls and \$2 of GPU time on Hugging Face Jobs.
 [^grader]: The grader is the article's, so the gap lies in generation.
@@ -131,7 +131,7 @@ These run on synthetic models with planted defects, built by `weightsmith fixtur
 | Policy | `policy { allow probe(max_forward_passes = 500)  allow mutate(max_changed_params = 5%)  allow reason(max_calls = 20) }` |
 | Output | `output { model, patch, findings, evidence, evaluation, summary }` |
 
-The full definition is in [docs/semantics.md](docs/semantics.md).
+The full definition is in [docs/semantics.md](https://github.com/JGalego/weightsmith/blob/main/docs/semantics.md).
 
 ## 💻 Command line
 
@@ -165,8 +165,8 @@ The full definition is in [docs/semantics.md](docs/semantics.md).
 - Patches store replacement values, so a dense patch is about twice the size of the tensors it changes.
 - Merging unrelated networks fails without permutation alignment, which Weightsmith doesn't do.
 
-See [docs/vision.md](docs/vision.md) for where the language is headed and [CONTRIBUTING.md](CONTRIBUTING.md) to work on it.
+See [docs/vision.md](https://github.com/JGalego/weightsmith/blob/main/docs/vision.md) for where the language is headed and [CONTRIBUTING.md](https://github.com/JGalego/weightsmith/blob/main/CONTRIBUTING.md) to work on it.
 
 ## 📜 Licence
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/JGalego/weightsmith/blob/main/LICENSE).
