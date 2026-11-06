@@ -1,26 +1,39 @@
-model Base = load("fixtures/tiny_mlp_defective")
-behavior parity   = probes("fixtures/tiny_mlp/parity.json",   metric = accuracy)
-behavior majority = probes("fixtures/tiny_mlp/majority.json", metric = accuracy)
+// Abridged from examples/repair_with_claude.wsm
+model LM = load("fixtures/tiny_llama_defective")
 
-program RepairMLP {
-    target Base
+behavior count_test    = probes("fixtures/tiny_llama/count_test.json",    metric = accuracy)
+behavior opposite_test = probes("fixtures/tiny_llama/opposite_test.json", metric = accuracy)
+behavior first_test    = probes("fixtures/tiny_llama/first_test.json",    metric = accuracy)
+
+editor Claude = provider("anthropic", model = "claude-opus-5-5", effort = "high")
+
+program RepairWithClaude {
+    target LM
 
     policy {
         allow probe(max_forward_passes = 2000)
-        allow mutate(max_changed_params = 10%)
+        allow mutate(max_changed_params = 1%)
+        allow reason(max_calls = 30, max_tokens = 2000000)
+        allow execute(max_seconds = 300)
         allow save
         forbid train
     }
 
     contract {
-        improve  parity   (min_delta = 0.25)
-        preserve majority (tolerance = 0.02)
+        improve  count_test    (min_delta = 0.1)
+        preserve opposite_test (tolerance = 0.07, min_n = 16)
+        preserve first_test    (tolerance = 0.02)
         require  finite
     }
 
-    find anomalies (kinds = [outlier_rows, nan_inf])
-    repair (strategies = [rescale_outlier_rows, replace_nonfinite])
+    delegate Claude (
+        task = "One of this model's three tasks is broken. Find out which, find the cause ...",
+        tools = [describe, read_weights, stats, find, run_probes,
+                 forward, edit, set_weights, undo, python],
+        practice = [count_train, opposite_train, first_train],
+        max_steps = 30
+    )
     verify
 
-    output { model, patch, findings, evidence, evaluation }
+    output { model, patch, evaluation }
 }

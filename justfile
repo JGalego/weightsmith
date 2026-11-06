@@ -69,3 +69,7 @@ vscode:
 clean:
     rm -rf .pytest_cache .ruff_cache dist build out
     find . -path ./.venv -prune -o -type d -name __pycache__ -exec rm -rf {} +
+
+# Re-record the README's terminal GIF (needs vhs and the fixtures)
+demo: fixtures
+    vhs assets/demo.tape
